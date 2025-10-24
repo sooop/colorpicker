@@ -13,19 +13,22 @@
   $: activePalette = $palettes.find(p => p.id === $activePaletteId);
 
   function generateVariations(color, type) {
-    const count = 8;
+    const count = 16;
     const results = [];
 
     if (type === 'lightness') {
-      // L variation: 0~1 범위를 8등분
+      // L variation: 제곱근 함수로 비선형 분포
+      // 어두운 영역(0에 가까운)에서는 간격이 크고, 밝은 영역(1에 가까운)에서는 간격이 작음
       for (let i = 0; i < count; i++) {
-        const l = (i + 1) / (count + 1); // 0.111, 0.222, ..., 0.888
+        const normalized = i / (count - 1); // 0 ~ 1
+        const l = Math.sqrt(normalized); // 제곱근으로 비선형 분포
         results.push({ l, c: color.c, h: color.h });
       }
     } else {
-      // C variation: 0~0.4 범위를 8등분
+      // C variation: 동일한 비선형 분포 적용
       for (let i = 0; i < count; i++) {
-        const c = ((i + 1) / (count + 1)) * 0.4; // 0.044, 0.089, ..., 0.356
+        const normalized = i / (count - 1);
+        const c = Math.sqrt(normalized) * 0.4;
         results.push({ l: color.l, c, h: color.h });
       }
     }
