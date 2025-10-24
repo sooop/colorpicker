@@ -19,6 +19,10 @@
   let confirmMessage = '';
   let confirmAction = null;
 
+  // Long press 상태
+  let longPressTimer = null;
+  let longPressTarget = null;
+
   $: activePalette = $palettes.find(p => p.id === $activePaletteId);
 
   function selectColor(colorData, index) {
@@ -83,8 +87,9 @@
   }
 
   function addNewPalette() {
+    let newId;
     palettes.update(pals => {
-      const newId = Math.max(...pals.map(p => p.id)) + 1;
+      newId = Math.max(...pals.map(p => p.id)) + 1;
       return [
         ...pals,
         {
@@ -94,6 +99,8 @@
         }
       ];
     });
+    // 새로 만든 팔레트로 전환
+    activePaletteId.set(newId);
   }
 
   function deletePalette(targetPaletteId) {
@@ -198,6 +205,57 @@
       closeContextMenu();
     }
   }
+
+  function handleLongPressStart(event, paletteId, colorIndex) {
+    longPressTarget = { paletteId, colorIndex };
+    const touch = event.touches ? event.touches[0] : event;
+
+    longPressTimer = setTimeout(() => {
+      // Long press 감지됨 - 컨텍스트 메뉴 열기
+      contextMenu = {
+        show: true,
+        x: touch.clientX,
+        y: touch.clientY,
+        paletteId,
+        colorIndex,
+        type: 'color'
+      };
+      longPressTimer = null;
+    }, 500); // 500ms long press
+  }
+
+  function handleLongPressEnd() {
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+    longPressTarget = null;
+  }
+
+  function handleLongPressMove() {
+    // 터치가 움직이면 long press 취소
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  }
+
+  function handlePaletteLongPressStart(event, paletteId) {
+    const touch = event.touches ? event.touches[0] : event;
+
+    longPressTimer = setTimeout(() => {
+      // Long press 감지됨 - 팔레트 컨텍스트 메뉴 열기
+      contextMenu = {
+        show: true,
+        x: touch.clientX,
+        y: touch.clientY,
+        paletteId,
+        colorIndex: null,
+        type: 'palette'
+      };
+      longPressTimer = null;
+    }, 500);
+  }
 </script>
 
 <svelte:window on:click={handleClickOutside} />
@@ -232,6 +290,9 @@
             on:click={() => activePaletteId.set(palette.id)}
             on:dblclick={() => startEditingName(palette.id, palette.name)}
             on:contextmenu={(e) => handlePaletteContextMenu(e, palette.id)}
+            on:touchstart={(e) => handlePaletteLongPressStart(e, palette.id)}
+            on:touchend={handleLongPressEnd}
+            on:touchmove={handleLongPressMove}
             class="cursor-pointer"
           >
             {palette.name}
@@ -250,6 +311,9 @@
           on:dragover={handleDragOver}
           on:drop={(e) => handleDrop(e, index)}
           on:dragend={handleDragEnd}
+          on:touchstart={(e) => handleLongPressStart(e, activePalette.id, index)}
+          on:touchend={handleLongPressEnd}
+          on:touchmove={handleLongPressMove}
           class="aspect-square border cursor-move transition-all
             {index === $selectedColorIndex
               ? 'border-orange-600 border-2'

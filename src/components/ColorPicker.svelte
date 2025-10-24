@@ -7,6 +7,7 @@
   export let variationBaseColor;
 
   let contextMenu = { show: false, x: 0, y: 0 };
+  let longPressTimer = null;
 
   let canvas;
   let pickerBox;
@@ -86,6 +87,52 @@
     isDragging = false;
   }
 
+  function handleTouchStart(event) {
+    event.preventDefault();
+    const touch = event.touches[0];
+
+    // Long press 타이머 시작
+    handleLongPress(event);
+
+    // 드래그 시작
+    isDragging = true;
+    handlePickerMove({ clientX: touch.clientX, clientY: touch.clientY });
+  }
+
+  function handleTouchMove(event) {
+    // 터치가 움직이면 long press 취소
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+
+    if (isDragging) {
+      event.preventDefault();
+      const touch = event.touches[0];
+      handlePickerMove({ clientX: touch.clientX, clientY: touch.clientY });
+    }
+  }
+
+  function handleTouchEnd() {
+    isDragging = false;
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  }
+
+  function handleLongPress(event) {
+    const touch = event.touches[0];
+    longPressTimer = setTimeout(() => {
+      contextMenu = {
+        show: true,
+        x: touch.clientX,
+        y: touch.clientY
+      };
+      longPressTimer = null;
+    }, 500);
+  }
+
   function handleKeyDown(event) {
     let percentage;
     if (event.ctrlKey) {
@@ -154,13 +201,20 @@
   }
 </script>
 
-<svelte:window on:mousemove={handleMouseMove} on:mouseup={handleMouseUp} on:click={handleClickOutside} />
+<svelte:window
+  on:mousemove={handleMouseMove}
+  on:mouseup={handleMouseUp}
+  on:touchmove={handleTouchMove}
+  on:touchend={handleTouchEnd}
+  on:click={handleClickOutside}
+/>
 
 <div class="flex flex-col gap-3">
   <div
     class="relative w-full aspect-square cursor-crosshair border border-neutral-300 focus:border-neutral-900 outline-none overflow-hidden"
     bind:this={pickerBox}
     on:mousedown={handleMouseDown}
+    on:touchstart={handleTouchStart}
     on:contextmenu={handleContextMenu}
     on:keydown={handleKeyDown}
     tabindex="0"

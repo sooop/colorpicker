@@ -17,6 +17,7 @@
   export let variationBaseColor;
 
   let contextMenu = { show: false, x: 0, y: 0 };
+  let longPressTimer = null;
 
   let colorMode = 'oklch';
   let colorInput = '';
@@ -147,6 +148,32 @@
       closeContextMenu();
     }
   }
+
+  function handleLongPress(event) {
+    const touch = event.touches ? event.touches[0] : event;
+    longPressTimer = setTimeout(() => {
+      contextMenu = {
+        show: true,
+        x: touch.clientX,
+        y: touch.clientY
+      };
+      longPressTimer = null;
+    }, 500);
+  }
+
+  function handleTouchEnd() {
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  }
+
+  function handleTouchMove() {
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  }
 </script>
 
 <svelte:window on:click={handleClickOutside} />
@@ -156,6 +183,9 @@
     class="w-full h-32 border border-neutral-300 relative cursor-pointer"
     style="background-color: {cssColor}"
     on:contextmenu={handleContextMenu}
+    on:touchstart={handleLongPress}
+    on:touchend={handleTouchEnd}
+    on:touchmove={handleTouchMove}
   >
     <div class="absolute bottom-2 right-2 flex flex-col items-end gap-0.5">
       <button
@@ -176,7 +206,7 @@
   </div>
 
   <div class="flex gap-2">
-    <select bind:value={colorMode} class="px-2 py-1.5 text-xs border border-neutral-300 bg-white">
+    <select bind:value={colorMode} class="px-2 py-1.5 text-xs border border-neutral-300 bg-white shrink-0">
       <option value="oklch">OKLCH</option>
       <option value="hex">HEX</option>
       <option value="rgb">RGB</option>
@@ -189,11 +219,11 @@
       bind:value={colorInput}
       on:change={handleColorInput}
       placeholder="색상 코드"
-      class="flex-1 px-2 py-1.5 text-xs border border-neutral-300 bg-white"
+      class="flex-1 min-w-0 px-2 py-1.5 text-xs border border-neutral-300 bg-white"
     />
     <button
       on:click={copyColor}
-      class="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white transition-colors"
+      class="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white transition-colors shrink-0"
       title="복사"
     >
       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
