@@ -87,22 +87,33 @@
   }
 
   function handleKeyDown(event) {
-    const step = event.shiftKey ? 0.01 : 0.005;
+    let percentage;
+    if (event.ctrlKey) {
+      percentage = 0.01; // 1%
+    } else if (event.shiftKey) {
+      percentage = 0.1; // 10%
+    } else {
+      percentage = 0.05; // 5%
+    }
+
+    const stepL = percentage * 1; // L 범위: 0~1
+    const stepC = percentage * 0.4; // C 범위: 0~0.4
+
     let newC = c;
     let newL = l;
 
     switch (event.key) {
       case 'ArrowLeft':
-        newC = Math.max(0, c - step);
+        newC = Math.max(0, c - stepC);
         break;
       case 'ArrowRight':
-        newC = Math.min(0.4, c + step);
+        newC = Math.min(0.4, c + stepC);
         break;
       case 'ArrowUp':
-        newL = Math.min(1, l + step);
+        newL = Math.min(1, l + stepL);
         break;
       case 'ArrowDown':
-        newL = Math.max(0, l - step);
+        newL = Math.max(0, l - stepL);
         break;
       default:
         return;

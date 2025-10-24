@@ -43,6 +43,7 @@
   }
 
   function addToPalette(color) {
+    // 이미 팔레트에 있는 색상이면 추가하지 않음
     if (isColorInPalette(color)) return;
 
     palettes.update(pals => {
@@ -120,15 +121,15 @@
           {#each variations as variation}
             <button
               on:click={() => addToPalette(variation)}
-              class="relative aspect-square border cursor-pointer transition-all
+              class="relative aspect-square border transition-all
                 {isColorInPalette(variation)
-                  ? 'border-neutral-400'
-                  : 'border-neutral-300 hover:border-orange-400'}"
+                  ? 'border-dashed border-neutral-400 cursor-default'
+                  : 'border-solid border-neutral-300 hover:border-orange-400 cursor-pointer'}"
               style="background-color: {oklchToCSS(variation)}"
               title={oklchToCSS(variation)}
             >
               {#if isColorInPalette(variation)}
-                <div class="absolute inset-0 flex items-center justify-center text-white text-2xl font-bold">
+                <div class="absolute inset-0 flex items-center justify-center text-white text-2xl font-bold" style="text-shadow: 0 0 3px rgba(0,0,0,0.5)">
                   ✓
                 </div>
               {/if}

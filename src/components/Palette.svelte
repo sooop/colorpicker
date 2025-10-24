@@ -1,5 +1,6 @@
 <script>
   import { oklchToCSS } from '../utils/colorUtils.js';
+  import ConfirmModal from './ConfirmModal.svelte';
 
   export let palettes;
   export let activePaletteId;
@@ -12,6 +13,11 @@
   let editingPaletteId = null;
   let editingName = '';
   let draggedIndex = null;
+
+  // Confirm 모달 상태
+  let showConfirmModal = false;
+  let confirmMessage = '';
+  let confirmAction = null;
 
   $: activePalette = $palettes.find(p => p.id === $activePaletteId);
 
@@ -56,21 +62,20 @@
   function deleteColor() {
     if (contextMenu.paletteId === null || contextMenu.colorIndex === null) return;
 
-    if (!confirm('이 색상을 삭제하시겠습니까?')) {
-      closeContextMenu();
-      return;
-    }
-
-    palettes.update(pals => {
-      return pals.map(p => {
-        if (p.id === contextMenu.paletteId) {
-          const newColors = p.colors.filter((_, i) => i !== contextMenu.colorIndex);
-          return { ...p, colors: newColors };
-        }
-        return p;
+    confirmMessage = '이 색상을 삭제하시겠습니까?';
+    confirmAction = () => {
+      palettes.update(pals => {
+        return pals.map(p => {
+          if (p.id === contextMenu.paletteId) {
+            const newColors = p.colors.filter((_, i) => i !== contextMenu.colorIndex);
+            return { ...p, colors: newColors };
+          }
+          return p;
+        });
       });
-    });
-
+      closeContextMenu();
+    };
+    showConfirmModal = true;
     closeContextMenu();
   }
 
@@ -90,19 +95,23 @@
 
   function deletePalette(paletteId) {
     if ($palettes.length <= 1) {
-      alert('최소 1개의 팔레트가 필요합니다.');
+      confirmMessage = '최소 1개의 팔레트가 필요합니다.';
+      confirmAction = null; // 확인만 하는 용도
+      showConfirmModal = true;
+      closeContextMenu();
       return;
     }
 
-    if (!confirm('이 팔레트를 삭제하시겠습니까?')) {
-      return;
-    }
+    confirmMessage = '이 팔레트를 삭제하시겠습니까?';
+    confirmAction = () => {
+      palettes.update(pals => pals.filter(p => p.id !== paletteId));
 
-    palettes.update(pals => pals.filter(p => p.id !== paletteId));
-
-    if ($activePaletteId === paletteId) {
-      activePaletteId.set($palettes[0].id);
-    }
+      if ($activePaletteId === paletteId) {
+        activePaletteId.set($palettes[0].id);
+      }
+    };
+    showConfirmModal = true;
+    closeContextMenu();
   }
 
   function handleClickOutside(event) {
@@ -295,3 +304,10 @@
     {/if}
   </div>
 {/if}
+
+<ConfirmModal
+  bind:show={showConfirmModal}
+  message={confirmMessage}
+  onConfirm={confirmAction || (() => {})}
+  onCancel={() => {}}
+/>

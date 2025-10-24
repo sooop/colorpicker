@@ -103,7 +103,7 @@
 
 <svelte:window on:paste={handleGlobalPaste} />
 
-<main class="max-w-7xl mx-auto p-6 min-h-screen flex flex-col">
+<main class="max-w-3xl mx-auto p-6 min-h-screen flex flex-col">
   <h1 class="text-lg font-normal text-neutral-800 mb-6">OKLCH Color Palette</h1>
 
   <div class="flex flex-col gap-6 flex-1">
