@@ -62,18 +62,21 @@
   function deleteColor() {
     if (contextMenu.paletteId === null || contextMenu.colorIndex === null) return;
 
+    // 클로저로 값을 캡처
+    const paletteId = contextMenu.paletteId;
+    const colorIndex = contextMenu.colorIndex;
+
     confirmMessage = '이 색상을 삭제하시겠습니까?';
     confirmAction = () => {
       palettes.update(pals => {
         return pals.map(p => {
-          if (p.id === contextMenu.paletteId) {
-            const newColors = p.colors.filter((_, i) => i !== contextMenu.colorIndex);
+          if (p.id === paletteId) {
+            const newColors = p.colors.filter((_, i) => i !== colorIndex);
             return { ...p, colors: newColors };
           }
           return p;
         });
       });
-      closeContextMenu();
     };
     showConfirmModal = true;
     closeContextMenu();
@@ -93,7 +96,7 @@
     });
   }
 
-  function deletePalette(paletteId) {
+  function deletePalette(targetPaletteId) {
     if ($palettes.length <= 1) {
       confirmMessage = '최소 1개의 팔레트가 필요합니다.';
       confirmAction = null; // 확인만 하는 용도
@@ -104,9 +107,9 @@
 
     confirmMessage = '이 팔레트를 삭제하시겠습니까?';
     confirmAction = () => {
-      palettes.update(pals => pals.filter(p => p.id !== paletteId));
+      palettes.update(pals => pals.filter(p => p.id !== targetPaletteId));
 
-      if ($activePaletteId === paletteId) {
+      if ($activePaletteId === targetPaletteId) {
         activePaletteId.set($palettes[0].id);
       }
     };
@@ -188,7 +191,8 @@
 
   function openVariationModal() {
     if (contextMenu.colorIndex !== null && activePalette) {
-      const color = activePalette.colors[contextMenu.colorIndex];
+      const colorIndex = contextMenu.colorIndex;
+      const color = activePalette.colors[colorIndex];
       variationBaseColor.set(color);
       showVariationModal.set(true);
       closeContextMenu();
