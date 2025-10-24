@@ -13,6 +13,10 @@
   export let palettes;
   export let activePaletteId;
   export let selectedColorIndex;
+  export let showVariationModal;
+  export let variationBaseColor;
+
+  let contextMenu = { show: false, x: 0, y: 0 };
 
   let colorMode = 'oklch';
   let colorInput = '';
@@ -118,10 +122,41 @@
     const value = parseFloat(e.target.value);
     color.set({ ...currentColor, h: value });
   }
+
+  function handleContextMenu(event) {
+    event.preventDefault();
+    contextMenu = {
+      show: true,
+      x: event.clientX,
+      y: event.clientY
+    };
+  }
+
+  function closeContextMenu() {
+    contextMenu = { show: false, x: 0, y: 0 };
+  }
+
+  function openVariationModal() {
+    variationBaseColor.set(currentColor);
+    showVariationModal.set(true);
+    closeContextMenu();
+  }
+
+  function handleClickOutside(event) {
+    if (contextMenu.show && !event.target.closest('.context-menu')) {
+      closeContextMenu();
+    }
+  }
 </script>
 
+<svelte:window on:click={handleClickOutside} />
+
 <div class="flex flex-col gap-4 p-5 bg-white border border-neutral-200 rounded">
-  <div class="w-full h-32 border border-neutral-300 relative cursor-pointer" style="background-color: {cssColor}">
+  <div
+    class="w-full h-32 border border-neutral-300 relative cursor-pointer"
+    style="background-color: {cssColor}"
+    on:contextmenu={handleContextMenu}
+  >
     <div class="absolute bottom-2 right-2 flex flex-col items-end gap-0.5">
       <button
         on:click={copyHex}
@@ -251,6 +286,20 @@
     </button>
   </div>
 </div>
+
+{#if contextMenu.show}
+  <div
+    class="context-menu fixed bg-white border border-neutral-300 shadow-sm z-50 overflow-hidden"
+    style="left: {contextMenu.x}px; top: {contextMenu.y}px"
+  >
+    <button
+      on:click={openVariationModal}
+      class="block w-full px-4 py-2 text-xs text-left hover:bg-neutral-100 transition-colors"
+    >
+      Variation 생성
+    </button>
+  </div>
+{/if}
 
 <style>
   .slider {

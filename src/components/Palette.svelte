@@ -5,6 +5,8 @@
   export let activePaletteId;
   export let currentColor;
   export let selectedColorIndex;
+  export let showVariationModal;
+  export let variationBaseColor;
 
   let contextMenu = { show: false, x: 0, y: 0, paletteId: null, colorIndex: null, type: null };
   let editingPaletteId = null;
@@ -174,6 +176,15 @@
   function handleDragEnd() {
     draggedIndex = null;
   }
+
+  function openVariationModal() {
+    if (contextMenu.colorIndex !== null && activePalette) {
+      const color = activePalette.colors[contextMenu.colorIndex];
+      variationBaseColor.set(color);
+      showVariationModal.set(true);
+      closeContextMenu();
+    }
+  }
 </script>
 
 <svelte:window on:click={handleClickOutside} />
@@ -262,6 +273,12 @@
     style="left: {contextMenu.x}px; top: {contextMenu.y}px"
   >
     {#if contextMenu.type === 'color'}
+      <button
+        on:click={openVariationModal}
+        class="block w-full px-4 py-2 text-xs text-left hover:bg-neutral-100 transition-colors border-b border-neutral-200"
+      >
+        Variation 생성
+      </button>
       <button
         on:click={deleteColor}
         class="block w-full px-4 py-2 text-xs text-left hover:bg-neutral-100 transition-colors"

@@ -3,6 +3,10 @@
   import { rgb, oklch } from 'culori';
 
   export let color;
+  export let showVariationModal;
+  export let variationBaseColor;
+
+  let contextMenu = { show: false, x: 0, y: 0 };
 
   let canvas;
   let pickerBox;
@@ -112,15 +116,41 @@
     const newH = parseFloat(event.target.value);
     color.set({ l, c, h: newH });
   }
+
+  function handleContextMenu(event) {
+    event.preventDefault();
+    contextMenu = {
+      show: true,
+      x: event.clientX,
+      y: event.clientY
+    };
+  }
+
+  function closeContextMenu() {
+    contextMenu = { show: false, x: 0, y: 0 };
+  }
+
+  function openVariationModal() {
+    variationBaseColor.set($color);
+    showVariationModal.set(true);
+    closeContextMenu();
+  }
+
+  function handleClickOutside(event) {
+    if (contextMenu.show && !event.target.closest('.context-menu')) {
+      closeContextMenu();
+    }
+  }
 </script>
 
-<svelte:window on:mousemove={handleMouseMove} on:mouseup={handleMouseUp} />
+<svelte:window on:mousemove={handleMouseMove} on:mouseup={handleMouseUp} on:click={handleClickOutside} />
 
 <div class="flex flex-col gap-3">
   <div
     class="relative w-full aspect-square cursor-crosshair border border-neutral-300 focus:border-neutral-900 outline-none overflow-hidden"
     bind:this={pickerBox}
     on:mousedown={handleMouseDown}
+    on:contextmenu={handleContextMenu}
     on:keydown={handleKeyDown}
     tabindex="0"
     role="slider"
@@ -151,6 +181,20 @@
     />
   </div>
 </div>
+
+{#if contextMenu.show}
+  <div
+    class="context-menu fixed bg-white border border-neutral-300 shadow-sm z-50 overflow-hidden"
+    style="left: {contextMenu.x}px; top: {contextMenu.y}px"
+  >
+    <button
+      on:click={openVariationModal}
+      class="block w-full px-4 py-2 text-xs text-left hover:bg-neutral-100 transition-colors"
+    >
+      Variation 생성
+    </button>
+  </div>
+{/if}
 
 <style>
   .hue-slider {

@@ -5,6 +5,7 @@
   import ColorInfo from './components/ColorInfo.svelte';
   import Palette from './components/Palette.svelte';
   import Toast from './components/Toast.svelte';
+  import VariationModal from './components/VariationModal.svelte';
   import { parseColorToOklch } from './utils/colorUtils.js';
 
   // 로컬 스토리지에서 팔레트 불러오기
@@ -55,6 +56,10 @@
   const activePaletteId = writable(loadActivePaletteId());
   const selectedColorIndex = writable(loadSelectedColorIndex());
 
+  // Variation 모달 상태
+  const showVariationModal = writable(false);
+  const variationBaseColor = writable({ l: 0.7, c: 0.15, h: 250 });
+
   // 팔레트 변경 시 로컬 스토리지에 저장
   palettes.subscribe(value => {
     if (typeof window !== 'undefined') {
@@ -103,12 +108,12 @@
 
   <div class="flex flex-col gap-6 flex-1">
     <!-- 팔레트 영역 (상단) -->
-    <Palette {palettes} {activePaletteId} {currentColor} {selectedColorIndex} />
+    <Palette {palettes} {activePaletteId} {currentColor} {selectedColorIndex} {showVariationModal} {variationBaseColor} />
 
     <!-- 색상 선택기 + 정보 영역 (하단) -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-      <ColorPicker color={currentColor} />
-      <ColorInfo color={currentColor} {palettes} {activePaletteId} {selectedColorIndex} />
+      <ColorPicker color={currentColor} {showVariationModal} {variationBaseColor} />
+      <ColorInfo color={currentColor} {palettes} {activePaletteId} {selectedColorIndex} {showVariationModal} {variationBaseColor} />
     </div>
   </div>
 
@@ -116,5 +121,13 @@
     soooprmx &copy; 2025
   </footer>
 </main>
+
+<VariationModal
+  bind:show={$showVariationModal}
+  baseColor={$variationBaseColor}
+  {palettes}
+  {activePaletteId}
+  {currentColor}
+/>
 
 <Toast />
