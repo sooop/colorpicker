@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { rgb, oklch } from 'culori';
+  import { isInGamut, snapToGamutC } from '../utils/colorUtils.js';
 
   export let color;
   export let showVariationModal;
@@ -13,13 +14,23 @@
   let pickerBox;
   let isDragging = false;
 
+  // Axis lock state
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let dragStartL = 0;
+  let dragStartC = 0;
+  let axisLock = null; // null | 'L' | 'C'
+
+  // Keyboard step size: fine=0.5%, medium=2%, coarse=10%
+  let keyStep = 'medium';
+  const stepSizes = { fine: 0.005, medium: 0.02, coarse: 0.1 };
+
   $: ({ l, c, h } = $color);
 
   // 피커 위치 계산 (c: 가로, l: 세로)
-  $: pickerX = (c / 0.4) * 100; // chroma 최대값 0.4
-  $: pickerY = (1 - l) * 100; // lightness 반전
+  $: pickerX = (c / 0.4) * 100;
+  $: pickerY = (1 - l) * 100;
 
-  // h 값이 변경되면 Canvas 다시 그리기
   $: if (canvas && h !== undefined) {
     drawGradient();
   }
@@ -38,25 +49,59 @@
     const imageData = ctx.createImageData(width, height);
     const data = imageData.data;
 
+    // Track first out-of-gamut x per row for boundary line
+    const boundaryX = new Float32Array(height).fill(-1);
+
     for (let y = 0; y < height; y++) {
+      const lightness = 1 - (y / height);
+      let hitBoundary = false;
+
       for (let x = 0; x < width; x++) {
-        const lightness = 1 - (y / height); // 위쪽이 밝음
-        const chroma = (x / width) * 0.4; // 오른쪽으로 갈수록 강도 증가
-
-        // OKLCH를 RGB로 변환
-        const rgbColor = rgb(oklch({ l: lightness, c: chroma, h }));
-
+        const chroma = (x / width) * 0.4;
+        const raw = rgb(oklch({ l: lightness, c: chroma, h }));
         const index = (y * width + x) * 4;
-        if (rgbColor) {
-          data[index] = Math.round((rgbColor.r ?? 0) * 255);     // R
-          data[index + 1] = Math.round((rgbColor.g ?? 0) * 255); // G
-          data[index + 2] = Math.round((rgbColor.b ?? 0) * 255); // B
-          data[index + 3] = 255;                                  // A
+
+        if (raw) {
+          if (!hitBoundary && isInGamut(raw)) {
+            data[index]     = Math.round(raw.r * 255);
+            data[index + 1] = Math.round(raw.g * 255);
+            data[index + 2] = Math.round(raw.b * 255);
+            data[index + 3] = 255;
+          } else {
+            if (!hitBoundary) {
+              hitBoundary = true;
+              boundaryX[y] = x;
+            }
+            // Out-of-gamut: clamp for display
+            data[index]     = Math.round(Math.max(0, Math.min(1, raw.r)) * 255);
+            data[index + 1] = Math.round(Math.max(0, Math.min(1, raw.g)) * 255);
+            data[index + 2] = Math.round(Math.max(0, Math.min(1, raw.b)) * 255);
+            data[index + 3] = 255;
+          }
         }
       }
     }
 
     ctx.putImageData(imageData, 0, 0);
+
+    // Draw gamut boundary line
+    ctx.beginPath();
+    let started = false;
+    for (let y = 0; y < height; y++) {
+      if (boundaryX[y] >= 0) {
+        if (!started) {
+          ctx.moveTo(boundaryX[y], y);
+          started = true;
+        } else {
+          ctx.lineTo(boundaryX[y], y);
+        }
+      }
+    }
+    if (started) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
   }
 
   function handlePickerMove(event) {
@@ -66,14 +111,41 @@
     const x = Math.max(0, Math.min(event.clientX - rect.left, rect.width));
     const y = Math.max(0, Math.min(event.clientY - rect.top, rect.height));
 
-    const newC = (x / rect.width) * 0.4;
-    const newL = 1 - (y / rect.height);
+    let newC = (x / rect.width) * 0.4;
+    let newL = 1 - (y / rect.height);
+
+    // Alt key: axis lock
+    if (event.altKey && isDragging) {
+      if (axisLock === null) {
+        const dx = Math.abs(x - dragStartX);
+        const dy = Math.abs(y - dragStartY);
+        if (dx > 5 || dy > 5) {
+          axisLock = dx > dy ? 'C' : 'L';
+        }
+      }
+      if (axisLock === 'C') newL = dragStartL;
+      if (axisLock === 'L') newC = dragStartC;
+    } else if (!event.altKey) {
+      axisLock = null;
+    }
+
+    // Snap to gamut boundary
+    const raw = rgb(oklch({ l: newL, c: newC, h }));
+    if (!raw || !isInGamut(raw)) {
+      newC = snapToGamutC(newL, newC, h);
+    }
 
     color.set({ l: newL, c: newC, h });
   }
 
   function handleMouseDown(event) {
     isDragging = true;
+    const rect = pickerBox.getBoundingClientRect();
+    dragStartX = event.clientX - rect.left;
+    dragStartY = event.clientY - rect.top;
+    dragStartL = l;
+    dragStartC = c;
+    axisLock = null;
     handlePickerMove(event);
   }
 
@@ -85,22 +157,26 @@
 
   function handleMouseUp() {
     isDragging = false;
+    axisLock = null;
   }
 
   function handleTouchStart(event) {
     event.preventDefault();
     const touch = event.touches[0];
 
-    // Long press 타이머 시작
     handleLongPress(event);
 
-    // 드래그 시작
     isDragging = true;
+    const rect = pickerBox.getBoundingClientRect();
+    dragStartX = touch.clientX - rect.left;
+    dragStartY = touch.clientY - rect.top;
+    dragStartL = l;
+    dragStartC = c;
+    axisLock = null;
     handlePickerMove({ clientX: touch.clientX, clientY: touch.clientY });
   }
 
   function handleTouchMove(event) {
-    // 터치가 움직이면 long press 취소
     if (longPressTimer) {
       clearTimeout(longPressTimer);
       longPressTimer = null;
@@ -115,6 +191,7 @@
 
   function handleTouchEnd() {
     isDragging = false;
+    axisLock = null;
     if (longPressTimer) {
       clearTimeout(longPressTimer);
       longPressTimer = null;
@@ -136,15 +213,15 @@
   function handleKeyDown(event) {
     let percentage;
     if (event.ctrlKey) {
-      percentage = 0.01; // 1%
+      percentage = 0.005; // fine override
     } else if (event.shiftKey) {
-      percentage = 0.1; // 10%
+      percentage = 0.1; // coarse override
     } else {
-      percentage = 0.05; // 5%
+      percentage = stepSizes[keyStep];
     }
 
-    const stepL = percentage * 1; // L 범위: 0~1
-    const stepC = percentage * 0.4; // C 범위: 0~0.4
+    const stepL = percentage;
+    const stepC = percentage * 0.4;
 
     let newC = c;
     let newL = l;
@@ -167,12 +244,60 @@
     }
 
     event.preventDefault();
+
+    // Snap to gamut
+    const raw = rgb(oklch({ l: newL, c: newC, h }));
+    if (!raw || !isInGamut(raw)) {
+      newC = snapToGamutC(newL, newC, h);
+    }
+
+    color.set({ l: newL, c: newC, h });
+  }
+
+  function handlePickerWheel(event) {
+    event.preventDefault();
+    const mult = event.shiftKey ? 10 : event.ctrlKey ? 0.1 : 1;
+    const stepL = 0.01 * mult;
+    const stepC = 0.004 * mult;
+
+    let newL = l;
+    let newC = c;
+
+    if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+      // Horizontal scroll → C
+      newC = Math.max(0, Math.min(0.4, c + (event.deltaX > 0 ? 1 : -1) * stepC));
+    } else {
+      // Vertical scroll → L
+      newL = Math.max(0, Math.min(1, l + (event.deltaY > 0 ? -1 : 1) * stepL));
+    }
+
+    // Snap to gamut
+    const raw = rgb(oklch({ l: newL, c: newC, h }));
+    if (!raw || !isInGamut(raw)) {
+      newC = snapToGamutC(newL, newC, h);
+    }
+
     color.set({ l: newL, c: newC, h });
   }
 
   function handleHueChange(event) {
     const newH = parseFloat(event.target.value);
     color.set({ l, c, h: newH });
+  }
+
+  function handleHueWheel(event) {
+    event.preventDefault();
+    const delta = event.deltaY > 0 ? -1 : 1;
+    const newH = ((h + delta) % 360 + 360) % 360;
+    color.set({ l, c, h: newH });
+  }
+
+  function handleHueNumberInput(event) {
+    const val = parseFloat(event.target.value);
+    if (!isNaN(val)) {
+      const newH = Math.max(0, Math.min(360, val));
+      color.set({ l, c, h: newH });
+    }
   }
 
   function handleContextMenu(event) {
@@ -217,6 +342,7 @@
     on:touchstart={handleTouchStart}
     on:contextmenu={handleContextMenu}
     on:keydown={handleKeyDown}
+    on:wheel={handlePickerWheel}
     tabindex="0"
     role="slider"
     aria-label="색상 선택"
@@ -233,17 +359,43 @@
     ></div>
   </div>
 
-  <div class="w-full">
+  <!-- Hue slider + number input -->
+  <div class="flex items-center gap-2 w-full">
     <input
       type="range"
       min="0"
       max="360"
-      step="1"
+      step="0.1"
       value={h}
       on:input={handleHueChange}
+      on:wheel={handleHueWheel}
       aria-label="색상 각도"
-      class="hue-slider w-full h-6 cursor-pointer"
+      class="hue-slider flex-1 h-6 cursor-pointer"
     />
+    <input
+      type="number"
+      min="0"
+      max="360"
+      step="0.1"
+      value={h.toFixed(1)}
+      on:change={handleHueNumberInput}
+      aria-label="색상 각도 숫자 입력"
+      class="w-16 text-xs text-center border border-neutral-300 outline-none px-1 py-1 focus:border-neutral-900"
+    />
+  </div>
+
+  <!-- Keyboard step size -->
+  <div class="flex items-center gap-2 text-xs text-neutral-500">
+    <span>Step</span>
+    <div class="flex gap-1">
+      {#each ['fine', 'medium', 'coarse'] as s}
+        <button
+          class="px-2 py-0.5 border text-xs transition-colors {keyStep === s ? 'bg-neutral-900 text-white border-neutral-900' : 'border-neutral-300 hover:bg-neutral-100'}"
+          on:click={() => keyStep = s}
+        >{s}</button>
+      {/each}
+    </div>
+    <span class="text-neutral-400">(Alt=axis lock)</span>
   </div>
 </div>
 

@@ -1,5 +1,28 @@
 import { oklch, rgb, formatHex, formatRgb, formatHsl, hsv } from 'culori';
 
+// Check if an rgb color object (from culori) is within sRGB gamut
+export function isInGamut(rawRgb) {
+  if (!rawRgb) return false;
+  return rawRgb.r >= 0 && rawRgb.r <= 1 &&
+         rawRgb.g >= 0 && rawRgb.g <= 1 &&
+         rawRgb.b >= 0 && rawRgb.b <= 1;
+}
+
+// Binary search for maximum in-gamut chroma at given L and H
+export function snapToGamutC(l, c, h) {
+  const raw = rgb(oklch({ l, c, h }));
+  if (isInGamut(raw)) return c;
+
+  let lo = 0, hi = c;
+  for (let i = 0; i < 15; i++) {
+    const mid = (lo + hi) / 2;
+    const r = rgb(oklch({ l, c: mid, h }));
+    if (isInGamut(r)) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
 // OKLCH를 CSS 문자열로 변환
 export function oklchToCSS({ l, c, h }) {
   return `oklch(${(l * 100).toFixed(1)}% ${c.toFixed(3)} ${h.toFixed(1)})`;
