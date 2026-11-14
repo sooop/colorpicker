@@ -1,158 +1,138 @@
 <script>
-  import { oklchToCSS } from '../utils/colorUtils.js';
+  import { variationModal, palettes, activePaletteId, addColors } from '../state.js';
+  import {
+    oklchToCSS, oklchToHex, sameColor, generateVariations, generateScale
+  } from '../utils/colorUtils.js';
+  import { showToast } from './Toast.svelte';
+  import Dialog from './Dialog.svelte';
+  import Icon from './Icon.svelte';
 
-  export let show = false;
-  export let baseColor = { l: 0.7, c: 0.15, h: 250 };
-  export let palettes;
-  export let activePaletteId;
-  export let currentColor;
+  const MODES = [
+    { id: 'lightness', label: '밝기 (L)' },
+    { id: 'chroma', label: '강도 (C)' },
+    { id: 'hue', label: '색상각 (H)' },
+    { id: 'scale', label: '스케일' }
+  ];
 
-  let variationType = 'lightness'; // 'lightness' or 'chroma'
+  let mode = 'lightness';
+  let anchor = true;
 
-  $: variations = generateVariations(baseColor, variationType);
-  $: activePalette = $palettes.find(p => p.id === $activePaletteId);
+  $: open = $variationModal.open;
+  $: base = $variationModal.base;
+  $: modeIndex = MODES.findIndex((m) => m.id === mode);
+  $: activePalette = $palettes.find((p) => p.id === $activePaletteId);
 
-  function generateVariations(color, type) {
-    const count = 16;
-    const results = [];
+  // 모달이 열려 있는 동안만 계산한다
+  $: items = !open
+    ? []
+    : mode === 'scale'
+      ? generateScale(base, anchor).map((s) => ({ ...s, label: String(s.step) }))
+      : generateVariations(base, mode).map((color, i) => ({ color, label: String(i + 1) }));
+  $: tiles = items.map((it) => ({ ...it, hex: oklchToHex(it.color), css: oklchToCSS(it.color) }));
+  $: baseHex = oklchToHex(base);
 
-    if (type === 'lightness') {
-      // L variation: 제곱근 함수로 비선형 분포
-      // 어두운 영역(0에 가까운)에서는 간격이 크고, 밝은 영역(1에 가까운)에서는 간격이 작음
-      for (let i = 0; i < count; i++) {
-        const normalized = i / (count - 1); // 0 ~ 1
-        const l = Math.sqrt(normalized); // 제곱근으로 비선형 분포
-        results.push({ l, c: color.c, h: color.h });
-      }
-    } else {
-      // C variation: 동일한 비선형 분포 적용
-      for (let i = 0; i < count; i++) {
-        const normalized = i / (count - 1);
-        const c = Math.sqrt(normalized) * 0.4;
-        results.push({ l: color.l, c, h: color.h });
-      }
+  function inPalette(color) {
+    return !!activePalette && activePalette.colors.some((c) => sameColor(c, color));
+  }
+
+  // palettes 가 바뀌면 중복 표시를 다시 계산한다
+  $: marks = tiles.map((t) => !!activePalette && activePalette.colors.some((c) => sameColor(c, t.color)));
+  $: newCount = marks.filter((m) => !m).length;
+
+  function addOne(tile, i) {
+    if (marks[i]) {
+      showToast('이미 팔레트에 있는 색입니다', { type: 'info' });
+      return;
     }
-
-    return results;
+    addColors($activePaletteId, [tile.color]);
+    showToast('팔레트에 추가했습니다');
   }
 
-  function isColorInPalette(color) {
-    if (!activePalette) return false;
-    return activePalette.colors.some(c =>
-      Math.abs(c.l - color.l) < 0.001 &&
-      Math.abs(c.c - color.c) < 0.001 &&
-      Math.abs(c.h - color.h) < 0.1
-    );
+  function addAll() {
+    const { added, dup } = addColors($activePaletteId, tiles.map((t) => t.color));
+    showToast(dup ? `${added}개 추가, ${dup}개는 이미 있어 건너뜀` : `${added}개를 팔레트에 추가했습니다`);
   }
 
-  function addToPalette(color) {
-    // 이미 팔레트에 있는 색상이면 추가하지 않음
-    if (isColorInPalette(color)) return;
-
-    palettes.update(pals => {
-      return pals.map(p => {
-        if (p.id === $activePaletteId) {
-          return { ...p, colors: [...p.colors, color] };
-        }
-        return p;
-      });
-    });
+  function onClose() {
+    variationModal.update((v) => ({ ...v, open: false }));
   }
 
-  function close() {
-    show = false;
-  }
-
-  function handleBackdropClick(event) {
-    if (event.target === event.currentTarget) {
-      close();
-    }
+  function onModeKey(e) {
+    let next = modeIndex;
+    if (e.key === 'ArrowRight') next = (modeIndex + 1) % MODES.length;
+    else if (e.key === 'ArrowLeft') next = (modeIndex - 1 + MODES.length) % MODES.length;
+    else return;
+    e.preventDefault();
+    mode = MODES[next].id;
+    e.currentTarget.parentElement.querySelectorAll('button')[next].focus();
   }
 </script>
 
-{#if show}
-  <div
-    class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center"
-    on:click={handleBackdropClick}
-  >
-    <div class="bg-white rounded p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-      <div class="flex justify-between items-center mb-4">
-        <h2 class="text-lg font-normal text-neutral-800">Color Variation</h2>
-        <button
-          on:click={close}
-          class="text-neutral-500 hover:text-neutral-700 text-xl leading-none"
-        >
-          ×
-        </button>
-      </div>
-
-      <div class="mb-4">
-        <label class="block text-xs text-neutral-600 mb-2">기본 색상</label>
-        <div
-          class="w-full h-16 border border-neutral-300 rounded"
-          style="background-color: {oklchToCSS(baseColor)}"
-        ></div>
-      </div>
-
-      <div class="mb-6">
-        <label class="block text-xs text-neutral-600 mb-2">Variation 타입</label>
-        <div class="flex gap-2">
-          <button
-            on:click={() => variationType = 'lightness'}
-            class="flex-1 px-4 py-2 text-xs border transition-colors
-              {variationType === 'lightness'
-                ? 'bg-orange-600 text-white border-orange-600'
-                : 'bg-white text-neutral-700 border-neutral-300 hover:border-orange-400'}"
-          >
-            밝기 (L)
-          </button>
-          <button
-            on:click={() => variationType = 'chroma'}
-            class="flex-1 px-4 py-2 text-xs border transition-colors
-              {variationType === 'chroma'
-                ? 'bg-orange-600 text-white border-orange-600'
-                : 'bg-white text-neutral-700 border-neutral-300 hover:border-orange-400'}"
-          >
-            강도 (C)
-          </button>
-        </div>
-      </div>
-
-      <div class="mb-4">
-        <label class="block text-xs text-neutral-600 mb-2">생성된 Variations</label>
-        <div class="grid grid-cols-8 gap-2">
-          {#each variations as variation}
-            <button
-              on:click={() => addToPalette(variation)}
-              class="relative aspect-square border transition-all
-                {isColorInPalette(variation)
-                  ? 'border-dashed border-neutral-400 cursor-default'
-                  : 'border-solid border-neutral-300 hover:border-orange-400 cursor-pointer'}"
-              style="background-color: {oklchToCSS(variation)}"
-              title={oklchToCSS(variation)}
-            >
-              {#if isColorInPalette(variation)}
-                <div class="absolute inset-0 flex items-center justify-center text-white text-2xl font-bold" style="text-shadow: 0 0 3px rgba(0,0,0,0.5)">
-                  ✓
-                </div>
-              {/if}
-            </button>
-          {/each}
-        </div>
-      </div>
-
-      <div class="text-xs text-neutral-500 text-center">
-        클릭하여 팔레트에 추가
+<Dialog {open} title="변형·스케일" wide on:close={onClose} focusSelector=".seg-btn.active">
+  <div class="modal-body">
+    <div class="variation-base">
+      <span class="base-swatch" style="background-color: {baseHex}" aria-hidden="true"></span>
+      <div class="base-meta">
+        <span class="field-label">기준 색상</span>
+        <span class="mono">{oklchToCSS(base)}</span>
       </div>
     </div>
-  </div>
-{/if}
 
-<style>
-  .inset-0 {
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
-  }
-</style>
+    <div class="segmented seg-wide" style="--n: 4; --i: {modeIndex}" role="tablist" aria-label="생성 방식">
+      <span class="segmented-thumb" aria-hidden="true"></span>
+      {#each MODES as m}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={m.id === mode}
+          tabindex={m.id === mode ? 0 : -1}
+          class="seg-btn"
+          class:active={m.id === mode}
+          on:click={() => (mode = m.id)}
+          on:keydown={onModeKey}
+        >{m.label}</button>
+      {/each}
+    </div>
+
+    {#key mode}
+      <div class="variation-grid" class:scale={mode === 'scale'} role="group" aria-label="생성된 색">
+        {#each tiles as t, i (i)}
+          <button
+            type="button"
+            class="variation-item"
+            class:exists={marks[i]}
+            style="--i: {i}"
+            aria-label="{mode === 'scale' ? t.label + ' ' : ''}{t.hex}, {marks[i] ? '이미 팔레트에 있음' : '팔레트에 추가'}"
+            title="{t.css} · {t.hex}"
+            on:click={() => addOne(t, i)}
+          >
+            <span class="variation-swatch" style="background-color: {t.hex}">
+              {#if marks[i]}<span class="exists-mark"><Icon name="check" size={16} /></span>{/if}
+            </span>
+            {#if mode === 'scale'}
+              <span class="scale-label">{t.label}{t.anchor ? ' · 현재' : ''}</span>
+              <span class="scale-hex">{t.hex}</span>
+            {/if}
+          </button>
+        {/each}
+      </div>
+    {/key}
+
+    <div class="modal-foot">
+      {#if mode === 'scale'}
+        <label class="switch">
+          <input type="checkbox" bind:checked={anchor} />
+          <span class="switch-track"></span>
+          <span class="switch-label">현재 색을 단계에 포함</span>
+        </label>
+      {/if}
+      <span class="spacer"></span>
+      <span class="foot-meta">{activePalette ? '추가 대상 ' + activePalette.name : ''}</span>
+      {#if mode === 'scale'}
+        <button type="button" class="btn btn-primary" disabled={newCount === 0} on:click={addAll}>
+          <Icon name="plus" />팔레트에 모두 추가
+        </button>
+      {/if}
+    </div>
+  </div>
+</Dialog>

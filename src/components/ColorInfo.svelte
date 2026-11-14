@@ -1,368 +1,327 @@
 <script>
+  import { onDestroy } from 'svelte';
   import {
-    oklchToCSS,
-    oklchToHex,
-    oklchToRgbString,
-    oklchToHsl,
-    oklchToHsv,
-    parseColorToOklch
+    currentColor, palettes, activePaletteId, selectedColorIndex, settings,
+    setColor, setHue, addColors, openVariation, imageRequest
+  } from '../state.js';
+  import {
+    oklchToCSS, oklchToHex, oklchToRgbString, oklchToHsl, oklchToHsvString,
+    parseColorToOklch, bestTextColor, MAX_C
   } from '../utils/colorUtils.js';
+  import { copyWithToast } from '../utils/clipboard.js';
   import { showToast } from './Toast.svelte';
+  import { IMAGE_ACCEPT, matchesFile } from '../utils/files.js';
+  import ContextMenu from './ContextMenu.svelte';
+  import Contrast from './Contrast.svelte';
+  import Icon from './Icon.svelte';
 
-  export let color;
-  export let palettes;
-  export let activePaletteId;
-  export let selectedColorIndex;
-  export let showVariationModal;
-  export let variationBaseColor;
+  const MODES = [
+    { id: 'oklch', label: 'OKLCH' },
+    { id: 'hex', label: 'HEX' },
+    { id: 'rgb', label: 'RGB' },
+    { id: 'hsl', label: 'HSL' },
+    { id: 'hsv', label: 'HSV' }
+  ];
+  const hasEyeDropper = typeof window !== 'undefined' && 'EyeDropper' in window;
 
-  let contextMenu = { show: false, x: 0, y: 0 };
+  let menu = null;
   let longPressTimer = null;
+  let fileInput;
 
-  let colorMode = 'oklch';
-  let colorInput = '';
+  $: colorMode = $settings.colorMode;
+  $: cur = $currentColor;
+  $: hexValue = oklchToHex(cur);
+  $: rgbValue = oklchToRgbString(cur);
+  $: textColor = bestTextColor(cur);
+  $: activePalette = $palettes.find((p) => p.id === $activePaletteId);
 
-  $: currentColor = $color;
-  $: cssColor = oklchToCSS(currentColor);
-  $: hexValue = oklchToHex(currentColor);
-  $: rgbValue = oklchToRgbString(currentColor);
-
-  $: {
-    switch (colorMode) {
-      case 'oklch':
-        colorInput = oklchToCSS(currentColor);
-        break;
-      case 'hex':
-        colorInput = oklchToHex(currentColor);
-        break;
-      case 'rgb':
-        colorInput = oklchToRgbString(currentColor);
-        break;
-      case 'hsl':
-        colorInput = oklchToHsl(currentColor);
-        break;
-      case 'hsv':
-        const hsv = oklchToHsv(currentColor);
-        colorInput = `hsv(${Math.round(hsv.h || 0)}, ${Math.round((hsv.s || 0) * 100)}%, ${Math.round((hsv.v || 0) * 100)}%)`;
-        break;
+  function format(mode, c) {
+    switch (mode) {
+      case 'hex': return oklchToHex(c);
+      case 'rgb': return oklchToRgbString(c);
+      case 'hsl': return oklchToHsl(c);
+      case 'hsv': return oklchToHsvString(c);
+      default: return oklchToCSS(c);
     }
   }
 
-  $: activePalette = $palettes.find(p => p.id === $activePaletteId);
+  // ---- 텍스트 입력 ----
+  let editing = false;
+  let text = '';
+  let invalid = false;
+  let shake = false;
+  $: formatted = format(colorMode, cur);
+  $: if (!editing) text = formatted;
 
-  // 대비가 높은 텍스트 색상 자동 계산 (L 값 기준)
-  $: textColor = currentColor.l > 0.5 ? '#000000' : '#ffffff';
-
-  function copyColor() {
-    navigator.clipboard.writeText(colorInput).then(() => {
-      showToast('색상이 복사되었습니다');
-    });
+  function onTextInput() {
+    editing = true;
+    invalid = false;
   }
 
-  function copyHex() {
-    navigator.clipboard.writeText(hexValue).then(() => {
-      showToast('HEX 값이 복사되었습니다');
-    });
-  }
-
-  function copyRgb() {
-    navigator.clipboard.writeText(rgbValue).then(() => {
-      showToast('RGB 값이 복사되었습니다');
-    });
-  }
-
-  function handleColorInput() {
-    const parsed = parseColorToOklch(colorInput);
-    if (parsed) {
-      color.set(parsed);
+  function commitText() {
+    const parsed = parseColorToOklch(text);
+    if (!parsed) {
+      if (text.trim()) fail();
+      return;
+    }
+    invalid = false;
+    editing = false;
+    const snapped = setColor(parsed);
+    if (Math.abs(snapped.c - parsed.c) > 0.002) {
+      showToast('sRGB 색역 밖의 색이라 가장 가까운 색으로 조정했습니다', { type: 'info' });
     }
   }
 
+  function fail() {
+    invalid = true;
+    shake = false;
+    requestAnimationFrame(() => (shake = true));
+    setTimeout(() => (shake = false), 360);
+  }
+
+  function onTextBlur() {
+    editing = false;
+    if (!invalid) text = formatted;
+  }
+
+  function onTextKey(e) {
+    if (e.key === 'Escape') {
+      invalid = false;
+      editing = false;
+      text = formatted;
+    }
+  }
+
+  function setMode(e) {
+    const mode = e.target.value;
+    settings.update((s) => ({ ...s, colorMode: mode }));
+    invalid = false;
+    editing = false;
+  }
+
+  // ---- 복사 ----
+  let copied = false;
+  let copiedTimer;
+  async function copyColor() {
+    const ok = await copyWithToast(formatted, '색상을 복사했습니다');
+    if (ok) {
+      copied = true;
+      clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => (copied = false), 1300);
+    }
+  }
+  onDestroy(() => { clearTimeout(copiedTimer); clearTimeout(longPressTimer); });
+
+  // ---- 숫자 입력 (타이핑 중에는 값을 다시 포맷하지 않는다) ----
+  let draft = { l: null, c: null, h: null };
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  function applyField(key, v) {
+    if (key === 'l') setColor({ ...cur, l: clamp(v, 0, 1) });
+    else if (key === 'c') setColor({ ...cur, c: clamp(v, 0, MAX_C) });
+    else setHue(clamp(v, 0, 360));
+  }
+
+  function onNumberInput(key, e) {
+    draft[key] = e.target.value;
+    draft = draft;
+    const v = parseFloat(e.target.value);
+    if (Number.isFinite(v)) applyField(key, v);
+  }
+
+  function onNumberBlur(key) {
+    draft[key] = null;
+    draft = draft;
+  }
+
+  function onRange(key, e) {
+    draft[key] = null;
+    applyField(key, parseFloat(e.target.value));
+  }
+
+  $: fields = [
+    { key: 'l', label: 'L (밝기)', value: cur.l, text: cur.l.toFixed(3), min: 0, max: 1, step: 0.01 },
+    { key: 'c', label: 'C (강도)', value: cur.c, text: cur.c.toFixed(3), min: 0, max: MAX_C, step: 0.01 },
+    { key: 'h', label: 'H (각도)', value: cur.h, text: cur.h.toFixed(1), min: 0, max: 360, step: 1 }
+  ];
+
+  // ---- 팔레트 ----
   function addToPalette() {
     if (!activePalette) return;
-
-    palettes.update(pals => {
-      return pals.map(p => {
-        if (p.id === $activePaletteId) {
-          return {
-            ...p,
-            colors: [...p.colors, currentColor]
-          };
-        }
-        return p;
-      });
-    });
+    const { added } = addColors(activePalette.id, [cur], { dedupe: false });
+    if (added) showToast('팔레트에 추가했습니다');
   }
 
   function updatePaletteColor() {
-    if (!activePalette || $selectedColorIndex < 0) return;
-
-    palettes.update(pals => {
-      return pals.map(p => {
-        if (p.id === $activePaletteId) {
-          const newColors = [...p.colors];
-          newColors[$selectedColorIndex] = currentColor;
-          return { ...p, colors: newColors };
-        }
-        return p;
-      });
-    });
+    const idx = $selectedColorIndex;
+    if (!activePalette || idx < 0 || idx >= activePalette.colors.length) return;
+    palettes.update((pals) => pals.map((p) => {
+      if (p.id !== activePalette.id) return p;
+      const next = [...p.colors];
+      next[idx] = { ...cur };
+      return { ...p, colors: next };
+    }));
+    showToast('선택한 색을 업데이트했습니다');
   }
 
-  function handleLChange(e) {
-    const value = parseFloat(e.target.value);
-    color.set({ ...currentColor, l: value });
-  }
-
-  function handleCChange(e) {
-    const value = parseFloat(e.target.value);
-    color.set({ ...currentColor, c: value });
-  }
-
-  function handleHChange(e) {
-    const value = parseFloat(e.target.value);
-    color.set({ ...currentColor, h: value });
-  }
-
-  function handleContextMenu(event) {
-    event.preventDefault();
-    contextMenu = {
-      show: true,
-      x: event.clientX,
-      y: event.clientY
-    };
-  }
-
-  function closeContextMenu() {
-    contextMenu = { show: false, x: 0, y: 0 };
-  }
-
-  function openVariationModal() {
-    variationBaseColor.set(currentColor);
-    showVariationModal.set(true);
-    closeContextMenu();
-  }
-
-  function handleClickOutside(event) {
-    if (contextMenu.show && !event.target.closest('.context-menu')) {
-      closeContextMenu();
+  // ---- 스포이트 / 이미지 ----
+  async function eyedrop() {
+    try {
+      const result = await new window.EyeDropper().open();
+      const parsed = parseColorToOklch(result.sRGBHex);
+      if (parsed) setColor(parsed);
+    } catch (e) {
+      if (e && e.name !== 'AbortError') showToast('화면에서 색을 추출하지 못했습니다', { type: 'error' });
     }
   }
 
-  function handleLongPress(event) {
-    const touch = event.touches ? event.touches[0] : event;
-    longPressTimer = setTimeout(() => {
-      contextMenu = {
-        show: true,
-        x: touch.clientX,
-        y: touch.clientY
-      };
-      longPressTimer = null;
-    }, 500);
+  function onImageFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!matchesFile(file, IMAGE_ACCEPT)) {
+      showToast('이미지 파일(PNG, JPG, GIF, WebP 등)만 열 수 있습니다', { type: 'error' });
+      return;
+    }
+    imageRequest.set(file);
   }
 
-  function handleTouchEnd() {
-    if (longPressTimer) {
-      clearTimeout(longPressTimer);
-      longPressTimer = null;
-    }
+  // ---- 컨텍스트 메뉴 / 길게 누르기 ----
+  function openMenu(x, y) {
+    menu = { x, y };
   }
 
-  function handleTouchMove() {
-    if (longPressTimer) {
-      clearTimeout(longPressTimer);
-      longPressTimer = null;
-    }
+  function onContextMenu(e) {
+    e.preventDefault();
+    openMenu(e.clientX, e.clientY);
+  }
+
+  function onWellDown(e) {
+    if (e.pointerType === 'mouse') return;
+    const x = e.clientX;
+    const y = e.clientY;
+    clearTimeout(longPressTimer);
+    longPressTimer = setTimeout(() => { longPressTimer = null; openMenu(x, y); }, 500);
+  }
+
+  function cancelLongPress() {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
   }
 </script>
 
-<svelte:window on:click={handleClickOutside} />
-
-<div class="flex flex-col gap-4 p-5 bg-white border border-neutral-200 rounded">
+<section class="card info-card" aria-label="현재 색상">
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div
-    class="w-full h-32 border border-neutral-300 relative cursor-pointer"
-    style="background-color: {cssColor}"
-    on:contextmenu={handleContextMenu}
-    on:touchstart={handleLongPress}
-    on:touchend={handleTouchEnd}
-    on:touchmove={handleTouchMove}
+    class="color-well"
+    style="background-color: {hexValue}"
+    on:contextmenu={onContextMenu}
+    on:pointerdown={onWellDown}
+    on:pointerup={cancelLongPress}
+    on:pointercancel={cancelLongPress}
+    on:pointermove={cancelLongPress}
   >
-    <div class="absolute bottom-2 right-2 flex flex-col items-end gap-0.5">
-      <button
-        on:click={copyHex}
-        class="text-xs font-mono hover:opacity-70 transition-opacity"
-        style="color: {textColor}"
-      >
-        {hexValue}
-      </button>
-      <button
-        on:click={copyRgb}
-        class="text-xs font-mono hover:opacity-70 transition-opacity"
-        style="color: {textColor}"
-      >
-        {rgbValue}
-      </button>
+    <div class="well-codes">
+      <button type="button" class="well-code" style="color: {textColor}" title="HEX 복사" on:click={() => copyWithToast(hexValue, 'HEX 값을 복사했습니다')}>{hexValue}</button>
+      <button type="button" class="well-code" style="color: {textColor}" title="RGB 복사" on:click={() => copyWithToast(rgbValue, 'RGB 값을 복사했습니다')}>{rgbValue}</button>
     </div>
   </div>
 
-  <div class="flex gap-2">
-    <select bind:value={colorMode} class="px-2 py-1.5 text-xs border border-neutral-300 bg-white shrink-0">
-      <option value="oklch">OKLCH</option>
-      <option value="hex">HEX</option>
-      <option value="rgb">RGB</option>
-      <option value="hsl">HSL</option>
-      <option value="hsv">HSV</option>
+  <div class="input-row">
+    <select class="select" value={colorMode} on:change={setMode} aria-label="표기 형식">
+      {#each MODES as m}
+        <option value={m.id}>{m.label}</option>
+      {/each}
     </select>
-
-    <input
-      type="text"
-      bind:value={colorInput}
-      on:change={handleColorInput}
-      placeholder="색상 코드"
-      class="flex-1 min-w-0 px-2 py-1.5 text-xs border border-neutral-300 bg-white"
-    />
-    <button
-      on:click={copyColor}
-      class="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white transition-colors shrink-0"
-      title="복사"
-    >
-      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-      </svg>
-    </button>
-  </div>
-
-  <div class="flex flex-col gap-3">
-    <!-- L (밝기) -->
-    <div class="flex flex-col gap-1.5">
-      <div class="flex items-center justify-between">
-        <label class="font-light text-xs text-neutral-600">L (밝기)</label>
-        <input
-          type="number"
-          value={currentColor.l.toFixed(3)}
-          on:input={handleLChange}
-          step="0.01"
-          min="0"
-          max="1"
-          class="w-16 px-2 py-1 border border-neutral-300 text-center text-xs"
-        />
-      </div>
+    <div class="text-field" class:invalid class:shake>
       <input
-        type="range"
-        min="0"
-        max="1"
-        step="0.01"
-        value={currentColor.l}
-        on:input={handleLChange}
-        class="w-full slider"
+        type="text"
+        bind:value={text}
+        on:input={onTextInput}
+        on:change={commitText}
+        on:blur={onTextBlur}
+        on:keydown={onTextKey}
+        placeholder="색상 코드"
+        aria-label="색상 코드"
+        aria-invalid={invalid}
+        aria-describedby={invalid ? 'color-error' : undefined}
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
       />
     </div>
+    <button type="button" class="icon-btn copy-btn" class:copied aria-label="색상 복사" title="색상 복사" on:click={copyColor}>
+      <span class="icon-copy"><Icon name="copy" /></span>
+      <span class="icon-done"><Icon name="check" /></span>
+    </button>
+    {#if hasEyeDropper}
+      <button type="button" class="icon-btn" aria-label="화면에서 색 추출" title="화면에서 색 추출" on:click={eyedrop}>
+        <Icon name="eyedrop" />
+      </button>
+    {/if}
+    <button type="button" class="icon-btn" aria-label="이미지에서 색 추출" title="이미지에서 색 추출 (파일을 놓거나 붙여넣어도 됩니다)" on:click={() => fileInput.click()}>
+      <Icon name="image" />
+    </button>
+    <input type="file" accept="image/*" class="visually-hidden" tabindex="-1" bind:this={fileInput} on:change={onImageFile} />
+  </div>
+  {#if invalid}
+    <p class="field-error" id="color-error" role="alert">인식할 수 없는 색상입니다. HEX, rgb(), hsl(), oklch() 형식으로 입력하세요.</p>
+  {/if}
 
-    <!-- C (강도) -->
-    <div class="flex flex-col gap-1.5">
-      <div class="flex items-center justify-between">
-        <label class="font-light text-xs text-neutral-600">C (강도)</label>
+  <div class="channels">
+    {#each fields as f (f.key)}
+      <div class="channel">
+        <div class="channel-head">
+          <label for="num-{f.key}">{f.label}</label>
+          <input
+            id="num-{f.key}"
+            type="number"
+            class="num-input"
+            value={draft[f.key] ?? f.text}
+            on:input={(e) => onNumberInput(f.key, e)}
+            on:blur={() => onNumberBlur(f.key)}
+            step={f.key === 'h' ? 1 : 0.01}
+            min={f.min}
+            max={f.max}
+            inputmode="decimal"
+          />
+        </div>
         <input
-          type="number"
-          value={currentColor.c.toFixed(3)}
-          on:input={handleCChange}
-          step="0.01"
-          min="0"
-          max="0.4"
-          class="w-16 px-2 py-1 border border-neutral-300 text-center text-xs"
+          type="range"
+          class="slider"
+          min={f.min}
+          max={f.max}
+          step={f.step}
+          value={f.value}
+          on:input={(e) => onRange(f.key, e)}
+          aria-label={f.label}
         />
       </div>
-      <input
-        type="range"
-        min="0"
-        max="0.4"
-        step="0.01"
-        value={currentColor.c}
-        on:input={handleCChange}
-        class="w-full slider"
-      />
-    </div>
-
-    <!-- H (각도) -->
-    <div class="flex flex-col gap-1.5">
-      <div class="flex items-center justify-between">
-        <label class="font-light text-xs text-neutral-600">H (각도)</label>
-        <input
-          type="number"
-          value={currentColor.h.toFixed(1)}
-          on:input={handleHChange}
-          step="1"
-          min="0"
-          max="360"
-          class="w-16 px-2 py-1 border border-neutral-300 text-center text-xs"
-        />
-      </div>
-      <input
-        type="range"
-        min="0"
-        max="360"
-        step="1"
-        value={currentColor.h}
-        on:input={handleHChange}
-        class="w-full slider"
-      />
-    </div>
+    {/each}
   </div>
 
-  <div class="flex gap-2">
-    <button on:click={addToPalette} class="flex-1 px-3 py-2 text-xs bg-orange-600 hover:bg-orange-700 text-white transition-colors">
-      추가
-    </button>
-    <button
-      on:click={updatePaletteColor}
-      disabled={$selectedColorIndex < 0}
-      class="flex-1 px-3 py-2 text-xs bg-neutral-600 hover:bg-neutral-700 disabled:bg-neutral-300 disabled:cursor-not-allowed text-white transition-colors"
-    >
-      업데이트
-    </button>
-  </div>
-</div>
+  <Contrast />
 
-{#if contextMenu.show}
-  <div
-    class="context-menu fixed bg-white border border-neutral-300 shadow-sm z-50 overflow-hidden"
-    style="left: {contextMenu.x}px; top: {contextMenu.y}px"
-  >
-    <button
-      on:click={openVariationModal}
-      class="block w-full px-4 py-2 text-xs text-left hover:bg-neutral-100 transition-colors"
-    >
-      Variation 생성
+  <div class="action-row">
+    <button type="button" class="btn btn-primary" on:click={addToPalette}>
+      <Icon name="plus" />팔레트에 추가
+    </button>
+    <button type="button" class="btn" disabled={$selectedColorIndex < 0} on:click={updatePaletteColor}>업데이트</button>
+    <button type="button" class="btn" on:click={() => openVariation(cur)}>
+      <Icon name="layers" />변형·스케일
     </button>
   </div>
+</section>
+
+{#if menu}
+  <ContextMenu
+    x={menu.x}
+    y={menu.y}
+    label="현재 색상 메뉴"
+    items={[
+      { label: '변형·스케일 만들기', onSelect: () => openVariation(cur) },
+      { label: 'HEX 복사', onSelect: () => copyWithToast(hexValue, 'HEX 값을 복사했습니다') }
+    ]}
+    on:close={() => (menu = null)}
+  />
 {/if}
-
-<style>
-  .slider {
-    -webkit-appearance: none;
-    appearance: none;
-    height: 2px;
-    background: #d4d4d4;
-    outline: none;
-  }
-
-  .slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 12px;
-    height: 12px;
-    background: #171717;
-    cursor: pointer;
-    border-radius: 50%;
-  }
-
-  .slider::-moz-range-thumb {
-    width: 12px;
-    height: 12px;
-    background: #171717;
-    cursor: pointer;
-    border-radius: 50%;
-    border: none;
-  }
-</style>

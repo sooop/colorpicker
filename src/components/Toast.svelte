@@ -1,45 +1,71 @@
 <script context="module">
   import { writable } from 'svelte/store';
 
-  export const toast = writable({ show: false, message: '' });
+  export const toasts = writable([]);
 
-  let timeoutId;
+  let seq = 0;
+  const timers = new Map();
 
-  export function showToast(message, duration = 2000) {
-    if (timeoutId) clearTimeout(timeoutId);
+  function remove(id) {
+    toasts.update((list) => list.map((t) => (t.id === id ? { ...t, leaving: true } : t)));
+    setTimeout(() => toasts.update((list) => list.filter((t) => t.id !== id)), 220);
+  }
 
-    toast.set({ show: true, message });
+  export function dismissToast(id) {
+    clearTimeout(timers.get(id));
+    timers.delete(id);
+    remove(id);
+  }
 
-    timeoutId = setTimeout(() => {
-      toast.set({ show: false, message: '' });
-    }, duration);
+  // options: { type: 'success' | 'error' | 'info', duration, action: { label, onClick } }
+  export function showToast(message, options = {}) {
+    const { type = 'success', duration = 2200, action = null } = options;
+    const id = ++seq;
+    toasts.update((list) => {
+      // 같은 문구가 이미 떠 있으면 교체
+      const kept = list.filter((t) => {
+        if (t.message === message && !t.action) { clearTimeout(timers.get(t.id)); return false; }
+        return true;
+      });
+      return [...kept, { id, message, type, action, leaving: false }].slice(-4);
+    });
+    timers.set(id, setTimeout(() => dismissToast(id), action ? Math.max(duration, 6000) : duration));
+    return id;
   }
 </script>
 
 <script>
+  import { tick } from 'svelte';
+
+  let container;
+
+  // 모달(dialog)이 열려 있어도 토스트가 보이도록 최상위 레이어로 올린다
+  async function promote() {
+    await tick();
+    if (!container || !container.showPopover) return;
+    try {
+      if (container.matches(':popover-open')) container.hidePopover();
+      container.showPopover();
+    } catch (e) {
+      // popover 미지원 환경에서는 일반 레이어로 둔다
+    }
+  }
+
+  $: if ($toasts.length && container) promote();
+
+  function runAction(t) {
+    dismissToast(t.id);
+    t.action.onClick();
+  }
 </script>
 
-{#if $toast.show}
-  <div class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-fade-in">
-    <div class="px-4 py-2 bg-neutral-900 text-white text-xs rounded shadow-lg">
-      {$toast.message}
+<div class="toast-container" popover="manual" bind:this={container} role="status" aria-live="polite" aria-relevant="additions">
+  {#each $toasts as t (t.id)}
+    <div class="toast toast-{t.type}" class:leaving={t.leaving}>
+      <span class="toast-text">{t.message}</span>
+      {#if t.action}
+        <button type="button" class="toast-action" on:click={() => runAction(t)}>{t.action.label}</button>
+      {/if}
     </div>
-  </div>
-{/if}
-
-<style>
-  @keyframes fade-in {
-    from {
-      opacity: 0;
-      transform: translate(-50%, 10px);
-    }
-    to {
-      opacity: 1;
-      transform: translate(-50%, 0);
-    }
-  }
-
-  .animate-fade-in {
-    animation: fade-in 0.2s ease-out;
-  }
-</style>
+  {/each}
+</div>

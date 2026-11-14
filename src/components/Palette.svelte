@@ -1,381 +1,377 @@
 <script>
-  import { oklchToCSS } from '../utils/colorUtils.js';
-  import ConfirmModal from './ConfirmModal.svelte';
+  import { onMount, afterUpdate, onDestroy, tick } from 'svelte';
+  import {
+    palettes, activePaletteId, selectedColorIndex,
+    setColor, switchPalette, addColors, nextPaletteId, openVariation, currentColor
+  } from '../state.js';
+  import { oklchToHex, oklchToCSS } from '../utils/colorUtils.js';
+  import { showToast } from './Toast.svelte';
+  import ContextMenu from './ContextMenu.svelte';
+  import Icon from './Icon.svelte';
 
-  export let palettes;
-  export let activePaletteId;
-  export let currentColor;
-  export let selectedColorIndex;
-  export let showVariationModal;
-  export let variationBaseColor;
-
-  let contextMenu = { show: false, x: 0, y: 0, paletteId: null, colorIndex: null, type: null };
-  let editingPaletteId = null;
+  let menu = null; // { x, y, type: 'color' | 'palette', paletteId, index }
+  let editingId = null;
   let editingName = '';
-  let draggedIndex = null;
-
-  // Confirm 모달 상태
-  let showConfirmModal = false;
-  let confirmMessage = '';
-  let confirmAction = null;
-
-  // Long press 상태
+  let tablist;
+  let thumbEl;
+  let gridEl;
+  let thumbReady = false;
   let longPressTimer = null;
-  let longPressTarget = null;
 
-  $: activePalette = $palettes.find(p => p.id === $activePaletteId);
+  $: activePalette = $palettes.find((p) => p.id === $activePaletteId);
+  $: swatches = activePalette
+    ? activePalette.colors.map((col, i) => ({ col, hex: oklchToHex(col), css: oklchToCSS(col), i }))
+    : [];
 
-  function selectColor(colorData, index) {
-    currentColor.set(colorData);
-    selectedColorIndex.set(index);
+  // ---- 탭 표시 막대 위치 ----
+  function updateThumb() {
+    if (!tablist || !thumbEl) return;
+    const active = tablist.querySelector('.pal-tab.active');
+    if (!active) { thumbEl.style.opacity = '0'; return; }
+    thumbEl.style.opacity = '1';
+    thumbEl.style.width = active.offsetWidth + 'px';
+    thumbEl.style.height = active.offsetHeight + 'px';
+    thumbEl.style.transform = `translate(${active.offsetLeft}px, ${active.offsetTop}px)`;
+    if (!thumbReady) requestAnimationFrame(() => (thumbReady = true));
   }
 
-  // 팔레트 전환 시 선택 해제
-  $: if ($activePaletteId) {
-    selectedColorIndex.set(-1);
-  }
+  let ro;
+  onMount(() => {
+    updateThumb();
+    ro = new ResizeObserver(updateThumb);
+    ro.observe(tablist);
+  });
+  afterUpdate(updateThumb);
+  onDestroy(() => { if (ro) ro.disconnect(); clearTimeout(longPressTimer); });
 
-  function handleContextMenu(event, paletteId, colorIndex) {
-    event.preventDefault();
-    contextMenu = {
-      show: true,
-      x: event.clientX,
-      y: event.clientY,
-      paletteId,
-      colorIndex,
-      type: 'color'
-    };
-  }
-
-  function handlePaletteContextMenu(event, paletteId) {
-    event.preventDefault();
-    contextMenu = {
-      show: true,
-      x: event.clientX,
-      y: event.clientY,
-      paletteId,
-      colorIndex: null,
-      type: 'palette'
-    };
-  }
-
-  function closeContextMenu() {
-    contextMenu = { show: false, x: 0, y: 0, paletteId: null, colorIndex: null, type: null };
-  }
-
-  function deleteColor() {
-    if (contextMenu.paletteId === null || contextMenu.colorIndex === null) return;
-
-    // 클로저로 값을 캡처
-    const paletteId = contextMenu.paletteId;
-    const colorIndex = contextMenu.colorIndex;
-
-    confirmMessage = '이 색상을 삭제하시겠습니까?';
-    confirmAction = () => {
-      palettes.update(pals => {
-        return pals.map(p => {
-          if (p.id === paletteId) {
-            const newColors = p.colors.filter((_, i) => i !== colorIndex);
-            return { ...p, colors: newColors };
-          }
-          return p;
-        });
-      });
-    };
-    showConfirmModal = true;
-    closeContextMenu();
+  // ---- 탭 ----
+  function onTabKey(e, id) {
+    const ids = $palettes.map((p) => p.id);
+    const i = ids.indexOf(id);
+    let next = -1;
+    if (e.key === 'ArrowRight') next = (i + 1) % ids.length;
+    else if (e.key === 'ArrowLeft') next = (i - 1 + ids.length) % ids.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = ids.length - 1;
+    else if (e.key === 'F2') { e.preventDefault(); startRename(id); return; }
+    else return;
+    e.preventDefault();
+    switchPalette(ids[next]);
+    tick().then(() => tablist.querySelector('.pal-tab.active button')?.focus());
   }
 
   function addNewPalette() {
-    let newId;
-    palettes.update(pals => {
-      newId = Math.max(...pals.map(p => p.id)) + 1;
-      return [
-        ...pals,
-        {
-          id: newId,
-          name: `Palette ${newId}`,
-          colors: []
-        }
-      ];
-    });
-    // 새로 만든 팔레트로 전환
-    activePaletteId.set(newId);
+    const id = nextPaletteId($palettes);
+    palettes.update((pals) => [...pals, { id, name: `팔레트 ${id}`, colors: [] }]);
+    switchPalette(id);
   }
 
-  function deletePalette(targetPaletteId) {
+  // ---- 이름 변경 ----
+  function startRename(id) {
+    const p = $palettes.find((x) => x.id === id);
+    if (!p) return;
+    editingId = id;
+    editingName = p.name;
+  }
+
+  function focusSelect(node) {
+    node.focus();
+    node.select();
+  }
+
+  function commitRename() {
+    if (editingId === null) return;
+    const name = editingName.trim().slice(0, 40);
+    const id = editingId;
+    editingId = null;
+    if (!name) return;
+    palettes.update((pals) => pals.map((p) => (p.id === id ? { ...p, name } : p)));
+    tick().then(() => tablist.querySelector('.pal-tab.active button')?.focus());
+  }
+
+  function onRenameKey(e) {
+    if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+    else if (e.key === 'Escape') { e.preventDefault(); editingId = null; tick().then(() => tablist.querySelector('.pal-tab.active button')?.focus()); }
+  }
+
+  // ---- 메뉴 / 길게 누르기 ----
+  function openMenu(x, y, type, paletteId, index = null) {
+    menu = { x, y, type, paletteId, index };
+  }
+
+  function startLongPress(e, type, paletteId, index) {
+    if (e.pointerType === 'mouse') return;
+    const x = e.clientX;
+    const y = e.clientY;
+    cancelLongPress();
+    longPressTimer = setTimeout(() => {
+      longPressTimer = null;
+      drag = null;
+      openMenu(x, y, type, paletteId, index);
+    }, 500);
+  }
+
+  function cancelLongPress() {
+    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+  }
+
+  function menuItems(m) {
+    if (!m) return [];
+    if (m.type === 'color') {
+      return [
+        { label: '변형·스케일 만들기', onSelect: () => { const c = currentPalette(m.paletteId)?.colors[m.index]; if (c) openVariation(c); } },
+        { label: '삭제', danger: true, onSelect: () => removeColor(m.paletteId, m.index) }
+      ];
+    }
+    return [
+      { label: '이름 변경', onSelect: () => { switchPalette(m.paletteId); startRename(m.paletteId); } },
+      { label: '팔레트 삭제', danger: true, onSelect: () => removePalette(m.paletteId) }
+    ];
+  }
+
+  const currentPalette = (id) => $palettes.find((p) => p.id === id);
+
+  // ---- 삭제 (되돌리기 제공) ----
+  function removeColor(paletteId, index) {
+    const pal = currentPalette(paletteId);
+    if (!pal || !pal.colors[index]) return;
+    const color = pal.colors[index];
+    const prevSel = $selectedColorIndex;
+    const wasActive = $activePaletteId === paletteId;
+    palettes.update((pals) => pals.map((p) => (p.id === paletteId ? { ...p, colors: p.colors.filter((_, i) => i !== index) } : p)));
+    if (wasActive) {
+      if (prevSel === index) selectedColorIndex.set(-1);
+      else if (prevSel > index) selectedColorIndex.set(prevSel - 1);
+    }
+    showToast('색을 삭제했습니다', {
+      type: 'info',
+      action: {
+        label: '되돌리기',
+        onClick: () => {
+          palettes.update((pals) => pals.map((p) => {
+            if (p.id !== paletteId) return p;
+            const next = [...p.colors];
+            next.splice(Math.min(index, next.length), 0, color);
+            return { ...p, colors: next };
+          }));
+          if (wasActive && $activePaletteId === paletteId) selectedColorIndex.set(prevSel);
+        }
+      }
+    });
+  }
+
+  function removePalette(paletteId) {
     if ($palettes.length <= 1) {
-      confirmMessage = '최소 1개의 팔레트가 필요합니다.';
-      confirmAction = null; // 확인만 하는 용도
-      showConfirmModal = true;
-      closeContextMenu();
+      showToast('마지막 팔레트는 삭제할 수 없습니다', { type: 'error' });
       return;
     }
-
-    confirmMessage = '이 팔레트를 삭제하시겠습니까?';
-    confirmAction = () => {
-      palettes.update(pals => pals.filter(p => p.id !== targetPaletteId));
-
-      if ($activePaletteId === targetPaletteId) {
-        activePaletteId.set($palettes[0].id);
-      }
-    };
-    showConfirmModal = true;
-    closeContextMenu();
-  }
-
-  function handleClickOutside(event) {
-    if (contextMenu.show && !event.target.closest('.context-menu')) {
-      closeContextMenu();
+    const index = $palettes.findIndex((p) => p.id === paletteId);
+    const pal = $palettes[index];
+    if (!pal) return;
+    const wasActive = $activePaletteId === paletteId;
+    const prevSel = $selectedColorIndex;
+    const remaining = $palettes.filter((p) => p.id !== paletteId);
+    palettes.set(remaining);
+    if (wasActive) {
+      activePaletteId.set(remaining[Math.min(index, remaining.length - 1)].id);
+      selectedColorIndex.set(-1);
     }
-  }
-
-  function startEditingName(paletteId, currentName) {
-    editingPaletteId = paletteId;
-    editingName = currentName;
-  }
-
-  function savePaletteName() {
-    if (editingPaletteId !== null && editingName.trim()) {
-      palettes.update(pals => {
-        return pals.map(p => {
-          if (p.id === editingPaletteId) {
-            return { ...p, name: editingName.trim() };
+    showToast(`'${pal.name}' 팔레트를 삭제했습니다`, {
+      type: 'info',
+      action: {
+        label: '되돌리기',
+        onClick: () => {
+          palettes.update((pals) => {
+            const next = [...pals];
+            next.splice(Math.min(index, next.length), 0, pal);
+            return next;
+          });
+          if (wasActive) {
+            activePaletteId.set(pal.id);
+            selectedColorIndex.set(prevSel);
           }
-          return p;
-        });
-      });
-    }
-    editingPaletteId = null;
-    editingName = '';
-  }
-
-  function cancelEditingName() {
-    editingPaletteId = null;
-    editingName = '';
-  }
-
-  function handleNameKeyDown(event) {
-    if (event.key === 'Enter') {
-      savePaletteName();
-    } else if (event.key === 'Escape') {
-      cancelEditingName();
-    }
-  }
-
-  function handleDragStart(event, index) {
-    draggedIndex = index;
-    event.dataTransfer.effectAllowed = 'move';
-  }
-
-  function handleDragOver(event) {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-  }
-
-  function handleDrop(event, dropIndex) {
-    event.preventDefault();
-    if (draggedIndex === null || draggedIndex === dropIndex) return;
-
-    palettes.update(pals => {
-      return pals.map(p => {
-        if (p.id === $activePaletteId) {
-          const newColors = [...p.colors];
-          const [removed] = newColors.splice(draggedIndex, 1);
-          newColors.splice(dropIndex, 0, removed);
-          return { ...p, colors: newColors };
         }
-        return p;
-      });
+      }
     });
-
-    draggedIndex = null;
   }
 
-  function handleDragEnd() {
-    draggedIndex = null;
+  // ---- 색 선택 ----
+  function selectColor(col, index) {
+    setColor(col);
+    selectedColorIndex.set(index);
   }
 
-  function openVariationModal() {
-    if (contextMenu.colorIndex !== null && activePalette) {
-      const colorIndex = contextMenu.colorIndex;
-      const color = activePalette.colors[colorIndex];
-      variationBaseColor.set(color);
-      showVariationModal.set(true);
-      closeContextMenu();
+  // ---- 재정렬 (포인터 이벤트: 마우스·터치 공통) ----
+  let drag = null; // { index, startX, startY, active, dx, dy, over, rects }
+  let suppressClick = false;
+
+  function onSwatchDown(e, index) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    drag = { index, startX: e.clientX, startY: e.clientY, active: false, dx: 0, dy: 0, over: index, rects: null };
+    startLongPress(e, 'color', activePalette.id, index);
+  }
+
+  function onSwatchMove(e) {
+    if (!drag) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    if (!drag.active) {
+      if (Math.hypot(dx, dy) < 7) return;
+      cancelLongPress();
+      drag.active = true;
+      drag.rects = Array.from(gridEl.querySelectorAll('[data-i]')).map((el) => {
+        const r = el.getBoundingClientRect();
+        return { i: +el.dataset.i, cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+      });
+    }
+    let best = drag.index;
+    let bestD = Infinity;
+    for (const r of drag.rects) {
+      const d = Math.hypot(e.clientX - r.cx, e.clientY - r.cy);
+      if (d < bestD) { bestD = d; best = r.i; }
+    }
+    drag.dx = dx;
+    drag.dy = dy;
+    drag.over = best;
+    drag = drag;
+  }
+
+  function onSwatchUp() {
+    cancelLongPress();
+    if (!drag) return;
+    const { active, index, over } = drag;
+    drag = null;
+    if (active) {
+      suppressClick = true;
+      setTimeout(() => (suppressClick = false), 0);
+      if (over !== index) moveColor(index, over);
     }
   }
 
-  function handleLongPressStart(event, paletteId, colorIndex) {
-    longPressTarget = { paletteId, colorIndex };
-    const touch = event.touches ? event.touches[0] : event;
-
-    longPressTimer = setTimeout(() => {
-      // Long press 감지됨 - 컨텍스트 메뉴 열기
-      contextMenu = {
-        show: true,
-        x: touch.clientX,
-        y: touch.clientY,
-        paletteId,
-        colorIndex,
-        type: 'color'
-      };
-      longPressTimer = null;
-    }, 500); // 500ms long press
-  }
-
-  function handleLongPressEnd() {
-    if (longPressTimer) {
-      clearTimeout(longPressTimer);
-      longPressTimer = null;
-    }
-    longPressTarget = null;
-  }
-
-  function handleLongPressMove() {
-    // 터치가 움직이면 long press 취소
-    if (longPressTimer) {
-      clearTimeout(longPressTimer);
-      longPressTimer = null;
+  function moveColor(from, to) {
+    const id = $activePaletteId;
+    const sel = $selectedColorIndex;
+    palettes.update((pals) => pals.map((p) => {
+      if (p.id !== id) return p;
+      const next = [...p.colors];
+      const [item] = next.splice(from, 1);
+      next.splice(to, 0, item);
+      return { ...p, colors: next };
+    }));
+    if (sel === from) selectedColorIndex.set(to);
+    else if (sel >= 0) {
+      if (from < sel && to >= sel) selectedColorIndex.set(sel - 1);
+      else if (from > sel && to <= sel) selectedColorIndex.set(sel + 1);
     }
   }
 
-  function handlePaletteLongPressStart(event, paletteId) {
-    const touch = event.touches ? event.touches[0] : event;
+  function onSwatchClick(col, index) {
+    if (suppressClick) return;
+    selectColor(col, index);
+  }
 
-    longPressTimer = setTimeout(() => {
-      // Long press 감지됨 - 팔레트 컨텍스트 메뉴 열기
-      contextMenu = {
-        show: true,
-        x: touch.clientX,
-        y: touch.clientY,
-        paletteId,
-        colorIndex: null,
-        type: 'palette'
-      };
-      longPressTimer = null;
-    }, 500);
+  async function onSwatchKey(e, index) {
+    if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      const to = index + (e.key === 'ArrowRight' ? 1 : -1);
+      if (to < 0 || to >= activePalette.colors.length) return;
+      moveColor(index, to);
+      await tick();
+      gridEl.querySelector(`[data-i="${to}"]`)?.focus();
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      removeColor(activePalette.id, index);
+    }
+  }
+
+  function addCurrent() {
+    if (!activePalette) return;
+    addColors(activePalette.id, [$currentColor], { dedupe: false });
   }
 </script>
 
-<svelte:window on:click={handleClickOutside} />
-
-<div class="p-5 bg-white border border-neutral-200 rounded">
-  <div class="flex justify-between items-center mb-4">
-    <h2 class="text-sm font-normal text-neutral-700">팔레트</h2>
-    <button on:click={addNewPalette} class="px-3 py-1.5 text-xs bg-orange-600 hover:bg-orange-700 text-white transition-colors">
-      새 팔레트
+<section class="card palette-card" aria-label="팔레트">
+  <div class="palette-head">
+    <div class="pal-tabs" role="tablist" aria-label="팔레트 목록" bind:this={tablist}>
+      <span class="pal-thumb" class:ready={thumbReady} bind:this={thumbEl} aria-hidden="true"></span>
+      {#each $palettes as palette (palette.id)}
+        <div class="pal-tab" class:active={palette.id === $activePaletteId}>
+          {#if editingId === palette.id}
+            <input
+              type="text"
+              class="rename-input"
+              bind:value={editingName}
+              use:focusSelect
+              on:keydown={onRenameKey}
+              on:blur={commitRename}
+              maxlength="40"
+              aria-label="팔레트 이름"
+            />
+          {:else}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={palette.id === $activePaletteId}
+              tabindex={palette.id === $activePaletteId ? 0 : -1}
+              on:click={() => switchPalette(palette.id)}
+              on:dblclick={() => startRename(palette.id)}
+              on:contextmenu|preventDefault={(e) => openMenu(e.clientX, e.clientY, 'palette', palette.id)}
+              on:pointerdown={(e) => startLongPress(e, 'palette', palette.id, null)}
+              on:pointerup={cancelLongPress}
+              on:pointercancel={cancelLongPress}
+              on:pointermove={cancelLongPress}
+              on:keydown={(e) => onTabKey(e, palette.id)}
+              title="더블클릭 또는 길게 눌러 이름 변경·삭제"
+            >
+              <span class="pal-name">{palette.name}</span>
+              <span class="tab-badge">{palette.colors.length}</span>
+            </button>
+          {/if}
+        </div>
+      {/each}
+    </div>
+    <button type="button" class="btn btn-sm" on:click={addNewPalette}>
+      <Icon name="plus" size={14} />새 팔레트
     </button>
   </div>
 
-  <div class="flex gap-2 mb-4 flex-wrap">
-    {#each $palettes as palette}
-      <div
-        class="px-3 py-1.5 border flex items-center gap-2 text-xs font-light transition-colors
-          {palette.id === $activePaletteId
-            ? 'bg-orange-600 text-white border-orange-600'
-            : 'bg-white border-neutral-300 hover:border-orange-400'}"
-      >
-        {#if editingPaletteId === palette.id}
-          <input
-            type="text"
-            bind:value={editingName}
-            on:keydown={handleNameKeyDown}
-            on:blur={savePaletteName}
-            class="px-2 py-1 border border-neutral-300 text-neutral-900 text-xs"
-            autofocus
-          />
-        {:else}
-          <button
-            on:click={() => activePaletteId.set(palette.id)}
-            on:dblclick={() => startEditingName(palette.id, palette.name)}
-            on:contextmenu={(e) => handlePaletteContextMenu(e, palette.id)}
-            on:touchstart={(e) => handlePaletteLongPressStart(e, palette.id)}
-            on:touchend={handleLongPressEnd}
-            on:touchmove={handleLongPressMove}
-            class="cursor-pointer"
-          >
-            {palette.name}
-          </button>
-        {/if}
-      </div>
-    {/each}
-  </div>
-
   {#if activePalette}
-    <div class="grid grid-cols-8 sm:grid-cols-12 md:grid-cols-16 gap-1.5">
-      {#each activePalette.colors as colorData, index}
+    <div class="swatch-grid" bind:this={gridEl} role="group" aria-label="{activePalette.name} 색상">
+      {#each swatches as s (s.i)}
         <button
-          draggable="true"
-          on:dragstart={(e) => handleDragStart(e, index)}
-          on:dragover={handleDragOver}
-          on:drop={(e) => handleDrop(e, index)}
-          on:dragend={handleDragEnd}
-          on:touchstart={(e) => handleLongPressStart(e, activePalette.id, index)}
-          on:touchend={handleLongPressEnd}
-          on:touchmove={handleLongPressMove}
-          class="aspect-square border cursor-move transition-all
-            {index === $selectedColorIndex
-              ? 'border-orange-600 border-2'
-              : 'border-neutral-300 hover:border-neutral-500'}
-            {draggedIndex === index ? 'opacity-50' : ''}"
-          style="background-color: {oklchToCSS(colorData)}"
-          on:click={() => selectColor(colorData, index)}
-          on:contextmenu={(e) => handleContextMenu(e, activePalette.id, index)}
-          title={oklchToCSS(colorData)}
+          type="button"
+          data-i={s.i}
+          class="swatch"
+          class:selected={s.i === $selectedColorIndex}
+          class:dragging={drag && drag.active && drag.index === s.i}
+          class:drop-target={drag && drag.active && drag.over === s.i && drag.index !== s.i}
+          style="background-color: {s.hex};{drag && drag.active && drag.index === s.i ? ` transform: translate(${drag.dx}px, ${drag.dy}px) scale(1.08);` : ''}"
+          aria-label="색상 {s.i + 1}, {s.hex}{s.i === $selectedColorIndex ? ', 선택됨' : ''}"
+          aria-current={s.i === $selectedColorIndex}
+          title="{s.hex} · {s.css}"
+          on:pointerdown={(e) => onSwatchDown(e, s.i)}
+          on:pointermove={onSwatchMove}
+          on:pointerup={onSwatchUp}
+          on:pointercancel={onSwatchUp}
+          on:click={() => onSwatchClick(s.col, s.i)}
+          on:contextmenu|preventDefault={(e) => openMenu(e.clientX, e.clientY, 'color', activePalette.id, s.i)}
+          on:keydown={(e) => onSwatchKey(e, s.i)}
         ></button>
       {/each}
-      <button
-        class="aspect-square border border-dashed border-neutral-300 flex items-center justify-center text-neutral-400 text-xs hover:border-neutral-500 cursor-pointer"
-        on:click={() => {
-          palettes.update(pals => {
-            return pals.map(p => {
-              if (p.id === $activePaletteId) {
-                return { ...p, colors: [...p.colors, $currentColor] };
-              }
-              return p;
-            });
-          });
-        }}
-      >
-        +
+      <button type="button" class="swatch swatch-add" aria-label="현재 색 추가" title="현재 색 추가" on:click={addCurrent}>
+        <Icon name="plus" />
       </button>
     </div>
   {/if}
-</div>
+</section>
 
-{#if contextMenu.show}
-  <div
-    class="context-menu fixed bg-white border border-neutral-300 shadow-sm z-50 overflow-hidden"
-    style="left: {contextMenu.x}px; top: {contextMenu.y}px"
-  >
-    {#if contextMenu.type === 'color'}
-      <button
-        on:click={openVariationModal}
-        class="block w-full px-4 py-2 text-xs text-left hover:bg-neutral-100 transition-colors border-b border-neutral-200"
-      >
-        Variation 생성
-      </button>
-      <button
-        on:click={deleteColor}
-        class="block w-full px-4 py-2 text-xs text-left hover:bg-neutral-100 transition-colors"
-      >
-        삭제
-      </button>
-    {:else if contextMenu.type === 'palette'}
-      <button
-        on:click={() => deletePalette(contextMenu.paletteId)}
-        class="block w-full px-4 py-2 text-xs text-left hover:bg-neutral-100 transition-colors"
-      >
-        팔레트 삭제
-      </button>
-    {/if}
-  </div>
+{#if menu}
+  <ContextMenu
+    x={menu.x}
+    y={menu.y}
+    label={menu.type === 'color' ? '색상 메뉴' : '팔레트 메뉴'}
+    items={menuItems(menu)}
+    on:close={() => (menu = null)}
+  />
 {/if}
-
-<ConfirmModal
-  bind:show={showConfirmModal}
-  message={confirmMessage}
-  onConfirm={confirmAction || (() => {})}
-  onCancel={() => {}}
-/>

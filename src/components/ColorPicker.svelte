@@ -1,376 +1,294 @@
 <script>
-  import { onMount } from 'svelte';
-  import { rgb, oklch } from 'culori';
-  import { isInGamut, snapToGamutC } from '../utils/colorUtils.js';
+  import { onMount, onDestroy } from 'svelte';
+  import { currentColor as color, settings, setColor, setHue, openVariation } from '../state.js';
+  import { renderGradient, MAX_CHROMA } from '../utils/pickerRender.js';
+  import ContextMenu from './ContextMenu.svelte';
 
-  export let color;
-  export let showVariationModal;
-  export let variationBaseColor;
+  const STEP_OPTIONS = [
+    { id: 'fine', label: '세밀', value: 0.005 },
+    { id: 'medium', label: '보통', value: 0.02 },
+    { id: 'coarse', label: '크게', value: 0.1 }
+  ];
+  const LOW_RES = 110;
+  const MAX_RES = 640;
 
-  let contextMenu = { show: false, x: 0, y: 0 };
+  let menu = null; // { x, y }
   let longPressTimer = null;
 
   let canvas;
   let pickerBox;
+  let hueInput;
+  let mounted = false;
   let isDragging = false;
 
-  // Axis lock state
+  // 축 고정 (Alt)
   let dragStartX = 0;
   let dragStartY = 0;
   let dragStartL = 0;
   let dragStartC = 0;
   let axisLock = null; // null | 'L' | 'C'
 
-  // Keyboard step size: fine=0.5%, medium=2%, coarse=10%
-  let keyStep = 'medium';
-  const stepSizes = { fine: 0.005, medium: 0.02, coarse: 0.1 };
-
   $: ({ l, c, h } = $color);
+  $: stepIndex = Math.max(0, STEP_OPTIONS.findIndex((s) => s.id === $settings.keyStep));
+  $: stepSize = STEP_OPTIONS[stepIndex].value;
 
-  // 피커 위치 계산 (c: 가로, l: 세로)
-  $: pickerX = (c / 0.4) * 100;
+  // 피커 위치 (c: 가로, l: 세로)
+  $: pickerX = (c / MAX_CHROMA) * 100;
   $: pickerY = (1 - l) * 100;
 
-  $: if (canvas && h !== undefined) {
-    drawGradient();
+  // ---- 캔버스 그리기 ----
+  // 색조가 바뀔 때마다 rAF 로 묶어 낮은 해상도로 먼저 그리고, 멈추면 화면 해상도(DPR)로 다시 그린다.
+  let rafId = 0;
+  let settleTimer = 0;
+  let drawnKey = '';
+
+  function fullResolution() {
+    const cssW = canvas.clientWidth || 300;
+    return Math.min(MAX_RES, Math.max(150, Math.round(cssW * (window.devicePixelRatio || 1))));
   }
 
-  onMount(() => {
-    drawGradient();
-  });
-
-  function drawGradient() {
+  function draw(size, hue) {
     if (!canvas) return;
-
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    const width = canvas.width;
-    const height = canvas.height;
-
-    const imageData = ctx.createImageData(width, height);
-    const data = imageData.data;
-
-    // Track first out-of-gamut x per row for boundary line
-    const boundaryX = new Float32Array(height).fill(-1);
-
-    for (let y = 0; y < height; y++) {
-      const lightness = 1 - (y / height);
-      let hitBoundary = false;
-
-      for (let x = 0; x < width; x++) {
-        const chroma = (x / width) * 0.4;
-        const raw = rgb(oklch({ l: lightness, c: chroma, h }));
-        const index = (y * width + x) * 4;
-
-        if (raw) {
-          if (!hitBoundary && isInGamut(raw)) {
-            data[index]     = Math.round(raw.r * 255);
-            data[index + 1] = Math.round(raw.g * 255);
-            data[index + 2] = Math.round(raw.b * 255);
-            data[index + 3] = 255;
-          } else {
-            if (!hitBoundary) {
-              hitBoundary = true;
-              boundaryX[y] = x;
-            }
-            // Out-of-gamut: clamp for display
-            data[index]     = Math.round(Math.max(0, Math.min(1, raw.r)) * 255);
-            data[index + 1] = Math.round(Math.max(0, Math.min(1, raw.g)) * 255);
-            data[index + 2] = Math.round(Math.max(0, Math.min(1, raw.b)) * 255);
-            data[index + 3] = 255;
-          }
-        }
-      }
+    const key = `${size}|${hue.toFixed(2)}`;
+    if (key === drawnKey) return;
+    drawnKey = key;
+    const ctx = canvas.getContext('2d');
+    const { img, boundary } = renderGradient(ctx, size, size, hue);
+    if (canvas.width !== size || canvas.height !== size) {
+      canvas.width = size;
+      canvas.height = size;
     }
+    ctx.putImageData(img, 0, 0);
 
-    ctx.putImageData(imageData, 0, 0);
-
-    // Draw gamut boundary line
+    // 색역 경계선
     ctx.beginPath();
     let started = false;
-    for (let y = 0; y < height; y++) {
-      if (boundaryX[y] >= 0) {
-        if (!started) {
-          ctx.moveTo(boundaryX[y], y);
-          started = true;
-        } else {
-          ctx.lineTo(boundaryX[y], y);
-        }
+    for (let y = 0; y < size; y++) {
+      if (boundary[y] >= 0) {
+        if (!started) { ctx.moveTo(boundary[y], y); started = true; }
+        else ctx.lineTo(boundary[y], y);
       }
     }
     if (started) {
       ctx.strokeStyle = 'rgba(255,255,255,0.75)';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = Math.max(1, size / 200);
       ctx.stroke();
     }
   }
 
-  function handlePickerMove(event) {
+  function requestDraw(immediate = false) {
+    if (!canvas) return;
+    clearTimeout(settleTimer);
+    if (immediate) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+      draw(fullResolution(), h);
+      return;
+    }
+    if (!rafId) {
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        draw(Math.min(LOW_RES, fullResolution()), h);
+      });
+    }
+    settleTimer = setTimeout(() => draw(fullResolution(), h), 140);
+  }
+
+  let lastHue = null;
+  $: if (mounted && h !== lastHue) {
+    const first = lastHue === null;
+    lastHue = h;
+    requestDraw(first);
+  }
+
+  let resizeObserver;
+  onMount(() => {
+    mounted = true;
+    resizeObserver = new ResizeObserver(() => {
+      drawnKey = '';
+      requestDraw(true);
+    });
+    resizeObserver.observe(pickerBox);
+    pickerBox.addEventListener('wheel', handlePickerWheel, { passive: false });
+    hueInput.addEventListener('wheel', handleHueWheel, { passive: false });
+  });
+
+  onDestroy(() => {
+    cancelAnimationFrame(rafId);
+    clearTimeout(settleTimer);
+    clearTimeout(longPressTimer);
+    if (resizeObserver) resizeObserver.disconnect();
+    if (pickerBox) pickerBox.removeEventListener('wheel', handlePickerWheel);
+    if (hueInput) hueInput.removeEventListener('wheel', handleHueWheel);
+  });
+
+  // ---- 포인터 조작 ----
+  function moveTo(clientX, clientY, altKey) {
     if (!pickerBox) return;
-
     const rect = pickerBox.getBoundingClientRect();
-    const x = Math.max(0, Math.min(event.clientX - rect.left, rect.width));
-    const y = Math.max(0, Math.min(event.clientY - rect.top, rect.height));
+    const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+    const y = Math.max(0, Math.min(clientY - rect.top, rect.height));
 
-    let newC = (x / rect.width) * 0.4;
-    let newL = 1 - (y / rect.height);
+    let newC = (x / rect.width) * MAX_CHROMA;
+    let newL = 1 - y / rect.height;
 
-    // Alt key: axis lock
-    if (event.altKey && isDragging) {
+    // Alt: 축 고정
+    if (altKey && isDragging) {
       if (axisLock === null) {
         const dx = Math.abs(x - dragStartX);
         const dy = Math.abs(y - dragStartY);
-        if (dx > 5 || dy > 5) {
-          axisLock = dx > dy ? 'C' : 'L';
-        }
+        if (dx > 5 || dy > 5) axisLock = dx > dy ? 'C' : 'L';
       }
       if (axisLock === 'C') newL = dragStartL;
       if (axisLock === 'L') newC = dragStartC;
-    } else if (!event.altKey) {
+    } else if (!altKey) {
       axisLock = null;
     }
 
-    // Snap to gamut boundary
-    const raw = rgb(oklch({ l: newL, c: newC, h }));
-    if (!raw || !isInGamut(raw)) {
-      newC = snapToGamutC(newL, newC, h);
-    }
-
-    color.set({ l: newL, c: newC, h });
+    setColor({ l: newL, c: newC, h });
   }
 
-  function handleMouseDown(event) {
-    isDragging = true;
-    const rect = pickerBox.getBoundingClientRect();
-    dragStartX = event.clientX - rect.left;
-    dragStartY = event.clientY - rect.top;
-    dragStartL = l;
-    dragStartC = c;
-    axisLock = null;
-    handlePickerMove(event);
-  }
-
-  function handleMouseMove(event) {
-    if (isDragging) {
-      handlePickerMove(event);
-    }
-  }
-
-  function handleMouseUp() {
-    isDragging = false;
-    axisLock = null;
-  }
-
-  function handleTouchStart(event) {
-    event.preventDefault();
-    const touch = event.touches[0];
-
-    handleLongPress(event);
-
-    isDragging = true;
-    const rect = pickerBox.getBoundingClientRect();
-    dragStartX = touch.clientX - rect.left;
-    dragStartY = touch.clientY - rect.top;
-    dragStartL = l;
-    dragStartC = c;
-    axisLock = null;
-    handlePickerMove({ clientX: touch.clientX, clientY: touch.clientY });
-  }
-
-  function handleTouchMove(event) {
-    if (longPressTimer) {
-      clearTimeout(longPressTimer);
-      longPressTimer = null;
-    }
-
-    if (isDragging) {
-      event.preventDefault();
-      const touch = event.touches[0];
-      handlePickerMove({ clientX: touch.clientX, clientY: touch.clientY });
-    }
-  }
-
-  function handleTouchEnd() {
-    isDragging = false;
-    axisLock = null;
+  function cancelLongPress() {
     if (longPressTimer) {
       clearTimeout(longPressTimer);
       longPressTimer = null;
     }
   }
 
-  function handleLongPress(event) {
-    const touch = event.touches[0];
-    longPressTimer = setTimeout(() => {
-      contextMenu = {
-        show: true,
-        x: touch.clientX,
-        y: touch.clientY
-      };
-      longPressTimer = null;
-    }, 500);
+  function handlePointerDown(e) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    pickerBox.focus({ preventScroll: true });
+    try { pickerBox.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
+    isDragging = true;
+    const rect = pickerBox.getBoundingClientRect();
+    dragStartX = e.clientX - rect.left;
+    dragStartY = e.clientY - rect.top;
+    dragStartL = l;
+    dragStartC = c;
+    axisLock = null;
+    if (e.pointerType !== 'mouse') {
+      const px = e.clientX;
+      const py = e.clientY;
+      cancelLongPress();
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        isDragging = false;
+        menu = { x: px, y: py };
+      }, 500);
+    }
+    moveTo(e.clientX, e.clientY, e.altKey);
   }
 
-  function handleKeyDown(event) {
-    let percentage;
-    if (event.ctrlKey) {
-      percentage = 0.005; // fine override
-    } else if (event.shiftKey) {
-      percentage = 0.1; // coarse override
-    } else {
-      percentage = stepSizes[keyStep];
+  function handlePointerMove(e) {
+    if (!isDragging) return;
+    if (longPressTimer) {
+      const rect = pickerBox.getBoundingClientRect();
+      const moved = Math.hypot(e.clientX - rect.left - dragStartX, e.clientY - rect.top - dragStartY);
+      if (moved > 6) cancelLongPress();
     }
+    moveTo(e.clientX, e.clientY, e.altKey);
+  }
 
-    const stepL = percentage;
-    const stepC = percentage * 0.4;
+  function handlePointerUp() {
+    isDragging = false;
+    axisLock = null;
+    cancelLongPress();
+  }
+
+  function handleContextMenu(e) {
+    e.preventDefault();
+    menu = { x: e.clientX, y: e.clientY };
+  }
+
+  // ---- 키보드 / 휠 ----
+  function handleKeyDown(e) {
+    let step = stepSize;
+    if (e.ctrlKey) step = 0.005; // 세밀 고정
+    else if (e.shiftKey) step = 0.1; // 크게 고정
 
     let newC = c;
     let newL = l;
-
-    switch (event.key) {
-      case 'ArrowLeft':
-        newC = Math.max(0, c - stepC);
-        break;
-      case 'ArrowRight':
-        newC = Math.min(0.4, c + stepC);
-        break;
-      case 'ArrowUp':
-        newL = Math.min(1, l + stepL);
-        break;
-      case 'ArrowDown':
-        newL = Math.max(0, l - stepL);
-        break;
-      default:
-        return;
+    switch (e.key) {
+      case 'ArrowLeft': newC = c - step * MAX_CHROMA; break;
+      case 'ArrowRight': newC = c + step * MAX_CHROMA; break;
+      case 'ArrowUp': newL = l + step; break;
+      case 'ArrowDown': newL = l - step; break;
+      default: return;
     }
-
-    event.preventDefault();
-
-    // Snap to gamut
-    const raw = rgb(oklch({ l: newL, c: newC, h }));
-    if (!raw || !isInGamut(raw)) {
-      newC = snapToGamutC(newL, newC, h);
-    }
-
-    color.set({ l: newL, c: newC, h });
+    e.preventDefault();
+    setColor({ l: newL, c: newC, h });
   }
 
-  function handlePickerWheel(event) {
-    event.preventDefault();
-    const mult = event.shiftKey ? 10 : event.ctrlKey ? 0.1 : 1;
-    const stepL = 0.01 * mult;
-    const stepC = 0.004 * mult;
-
+  function handlePickerWheel(e) {
+    e.preventDefault();
+    const mult = e.shiftKey ? 10 : e.ctrlKey ? 0.1 : 1;
     let newL = l;
     let newC = c;
-
-    if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
-      // Horizontal scroll → C
-      newC = Math.max(0, Math.min(0.4, c + (event.deltaX > 0 ? 1 : -1) * stepC));
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      newC = c + (e.deltaX > 0 ? 1 : -1) * 0.004 * mult;
     } else {
-      // Vertical scroll → L
-      newL = Math.max(0, Math.min(1, l + (event.deltaY > 0 ? -1 : 1) * stepL));
+      newL = l + (e.deltaY > 0 ? -1 : 1) * 0.01 * mult;
     }
-
-    // Snap to gamut
-    const raw = rgb(oklch({ l: newL, c: newC, h }));
-    if (!raw || !isInGamut(raw)) {
-      newC = snapToGamutC(newL, newC, h);
-    }
-
-    color.set({ l: newL, c: newC, h });
+    setColor({ l: newL, c: newC, h });
   }
 
-  function handleHueChange(event) {
-    const newH = parseFloat(event.target.value);
-    color.set({ l, c, h: newH });
+  function handleHueWheel(e) {
+    e.preventDefault();
+    setHue(h + (e.deltaY > 0 ? -1 : 1));
   }
 
-  function handleHueWheel(event) {
-    event.preventDefault();
-    const delta = event.deltaY > 0 ? -1 : 1;
-    const newH = ((h + delta) % 360 + 360) % 360;
-    color.set({ l, c, h: newH });
+  function handleHueInput(e) {
+    const v = parseFloat(e.target.value);
+    if (Number.isFinite(v)) setHue(v);
   }
 
-  function handleHueNumberInput(event) {
-    const val = parseFloat(event.target.value);
-    if (!isNaN(val)) {
-      const newH = Math.max(0, Math.min(360, val));
-      color.set({ l, c, h: newH });
-    }
+  function handleHueNumber(e) {
+    const v = parseFloat(e.target.value);
+    if (Number.isFinite(v)) setHue(Math.max(0, Math.min(360, v)));
+    e.target.value = (Number.isFinite(v) ? Math.max(0, Math.min(360, v)) : h).toFixed(1);
   }
 
-  function handleContextMenu(event) {
-    event.preventDefault();
-    contextMenu = {
-      show: true,
-      x: event.clientX,
-      y: event.clientY
-    };
+  function setStep(id) {
+    settings.update((s) => ({ ...s, keyStep: id }));
   }
 
-  function closeContextMenu() {
-    contextMenu = { show: false, x: 0, y: 0 };
-  }
-
-  function openVariationModal() {
-    variationBaseColor.set($color);
-    showVariationModal.set(true);
-    closeContextMenu();
-  }
-
-  function handleClickOutside(event) {
-    if (contextMenu.show && !event.target.closest('.context-menu')) {
-      closeContextMenu();
-    }
-  }
+  $: valueText = `명도 ${(l * 100).toFixed(1)}%, 채도 ${c.toFixed(3)}, 색상각 ${h.toFixed(1)}도`;
 </script>
 
-<svelte:window
-  on:mousemove={handleMouseMove}
-  on:mouseup={handleMouseUp}
-  on:touchmove={handleTouchMove}
-  on:touchend={handleTouchEnd}
-  on:click={handleClickOutside}
-/>
-
-<div class="flex flex-col gap-3">
+<section class="card picker-card" aria-label="색상 선택기">
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
   <div
-    class="relative w-full aspect-square cursor-crosshair border border-neutral-300 focus:border-neutral-900 outline-none overflow-hidden"
+    class="picker-box"
     bind:this={pickerBox}
-    on:mousedown={handleMouseDown}
-    on:touchstart={handleTouchStart}
+    on:pointerdown={handlePointerDown}
+    on:pointermove={handlePointerMove}
+    on:pointerup={handlePointerUp}
+    on:pointercancel={handlePointerUp}
     on:contextmenu={handleContextMenu}
     on:keydown={handleKeyDown}
-    on:wheel={handlePickerWheel}
     tabindex="0"
     role="slider"
-    aria-label="색상 선택"
+    aria-label="명도와 채도 선택"
+    aria-valuemin="0"
+    aria-valuemax="100"
+    aria-valuenow={Math.round(l * 100)}
+    aria-valuetext={valueText}
   >
-    <canvas
-      bind:this={canvas}
-      width="300"
-      height="300"
-      class="w-full h-full"
-    ></canvas>
-    <div
-      class="absolute w-3 h-3 border border-neutral-900 rounded-full pointer-events-none bg-white opacity-50"
-      style="left: {pickerX}%; top: {pickerY}%; transform: translate(-50%, -50%);"
-    ></div>
+    <canvas bind:this={canvas} width="300" height="300" aria-hidden="true"></canvas>
+    <div class="picker-handle" style="left: {pickerX}%; top: {pickerY}%"></div>
   </div>
 
-  <!-- Hue slider + number input -->
-  <div class="flex items-center gap-2 w-full">
+  <div class="hue-row">
     <input
+      bind:this={hueInput}
       type="range"
       min="0"
       max="360"
       step="0.1"
       value={h}
-      on:input={handleHueChange}
-      on:wheel={handleHueWheel}
-      aria-label="색상 각도"
-      class="hue-slider flex-1 h-6 cursor-pointer"
+      on:input={handleHueInput}
+      aria-label="색상각"
+      class="hue-slider"
     />
     <input
       type="number"
@@ -378,73 +296,37 @@
       max="360"
       step="0.1"
       value={h.toFixed(1)}
-      on:change={handleHueNumberInput}
-      aria-label="색상 각도 숫자 입력"
-      class="w-16 text-xs text-center border border-neutral-300 outline-none px-1 py-1 focus:border-neutral-900"
+      on:change={handleHueNumber}
+      aria-label="색상각 숫자 입력"
+      class="num-input"
     />
   </div>
 
-  <!-- Keyboard step size -->
-  <div class="flex items-center gap-2 text-xs text-neutral-500">
-    <span>Step</span>
-    <div class="flex gap-1">
-      {#each ['fine', 'medium', 'coarse'] as s}
+  <div class="step-row">
+    <span class="field-label" title="키보드 방향키로 한 번에 움직이는 크기 (Shift: 크게, Ctrl: 세밀)">이동 단계</span>
+    <div class="segmented" style="--n: 3; --i: {stepIndex}" role="radiogroup" aria-label="이동 단계">
+      <span class="segmented-thumb" aria-hidden="true"></span>
+      {#each STEP_OPTIONS as s}
         <button
-          class="px-2 py-0.5 border text-xs transition-colors {keyStep === s ? 'bg-neutral-900 text-white border-neutral-900' : 'border-neutral-300 hover:bg-neutral-100'}"
-          on:click={() => keyStep = s}
-        >{s}</button>
+          type="button"
+          role="radio"
+          aria-checked={s.id === $settings.keyStep}
+          class="seg-btn"
+          class:active={s.id === $settings.keyStep}
+          on:click={() => setStep(s.id)}
+        >{s.label}</button>
       {/each}
     </div>
-    <span class="text-neutral-400">(Alt=axis lock)</span>
+    <span class="hint"><kbd>Alt</kbd> 축 고정</span>
   </div>
-</div>
+</section>
 
-{#if contextMenu.show}
-  <div
-    class="context-menu fixed bg-white border border-neutral-300 shadow-sm z-50 overflow-hidden"
-    style="left: {contextMenu.x}px; top: {contextMenu.y}px"
-  >
-    <button
-      on:click={openVariationModal}
-      class="block w-full px-4 py-2 text-xs text-left hover:bg-neutral-100 transition-colors"
-    >
-      Variation 생성
-    </button>
-  </div>
+{#if menu}
+  <ContextMenu
+    x={menu.x}
+    y={menu.y}
+    label="색상 선택기 메뉴"
+    items={[{ label: '변형·스케일 만들기', onSelect: () => openVariation($color) }]}
+    on:close={() => (menu = null)}
+  />
 {/if}
-
-<style>
-  .hue-slider {
-    -webkit-appearance: none;
-    appearance: none;
-    background: linear-gradient(
-      to right,
-      oklch(70% 0.15 0),
-      oklch(70% 0.15 60),
-      oklch(70% 0.15 120),
-      oklch(70% 0.15 180),
-      oklch(70% 0.15 240),
-      oklch(70% 0.15 300),
-      oklch(70% 0.15 360)
-    );
-    outline: none;
-    border: 1px solid #d4d4d4;
-  }
-
-  .hue-slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 2px;
-    height: 24px;
-    background: #171717;
-    cursor: pointer;
-  }
-
-  .hue-slider::-moz-range-thumb {
-    width: 2px;
-    height: 24px;
-    background: #171717;
-    cursor: pointer;
-    border: none;
-  }
-</style>

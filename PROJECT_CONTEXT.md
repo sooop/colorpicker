@@ -15,7 +15,7 @@ OKLCH 색상 공간을 사용한 색상 팔레트 관리 웹 애플리케이션�
 - **비선형 분포**: 밝기(L) 0~1, 강도(C) 0~0.4 범위를 픽셀 단위로 계산
 - **인터랙션**:
   - 마우스 드래그 / 터치 드래그
-  - 키보드 화살표: 기본 5%, Shift+화살표 10%, Ctrl+화살표 1%
+  - 키보드 화살표: 이동 단계(세밀 0.5% / 보통 2% / 크게 10%, 저장됨), Shift=크게, Ctrl=세밀. 드래그 중 Alt=축 고정, 휠=L/C 조절
   - 우클릭 / Long Press (500ms): Variation 생성 메뉴
 
 ### 2. 색상 정보 (ColorInfo)
@@ -31,11 +31,11 @@ OKLCH 색상 공간을 사용한 색상 팔레트 관리 웹 애플리케이션�
 - **다중 팔레트**: 탭 방식으로 전환
 - **팔레트 CRUD**:
   - 생성: "새 팔레트" 버튼 → 자동으로 새 팔레트로 전환
-  - 이름 변경: 더블클릭
-  - 삭제: 우클릭 / Long Press → ConfirmModal (최소 1개 유지)
+  - 이름 변경: 더블클릭, F2, 길게 누르기/우클릭 메뉴
+  - 삭제: 우클릭 / Long Press 메뉴 → 즉시 삭제 + 토스트 "되돌리기" (최소 1개 유지)
 - **색상 스와치**:
   - 클릭: 색상 선택
-  - 드래그: 재정렬 (마우스 & 터치)
+  - 드래그: 재정렬 (pointer 이벤트, 마우스·터치), Alt+←/→ 키보드 이동
   - 우클릭 / Long Press: Variation 생성 / 삭제
   - 선택된 색상: 오렌지 테두리
 - **Placeholder**: 팔레트 맨 뒤에 "+" 버튼으로 현재 색상 추가
@@ -213,7 +213,7 @@ npm run build:standalone
 - 드래그 앤 드롭 재정렬
 - 우클릭/Long Press 메뉴
 
-**Grid**: `grid-cols-8 sm:grid-cols-12 md:grid-cols-16`
+**Grid**: `grid-cols-8 sm:grid-cols-12 md:grid-cols-16` → CSS 로 8/12/16열 (640px, 1000px 기준)
 
 ### VariationModal.svelte
 **Props**:
